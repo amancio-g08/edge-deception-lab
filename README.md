@@ -9,8 +9,7 @@ Português · [English](README.en.md)
 Honeypot que classifica quem bate nele pelo comportamento, e não pelo que o cliente
 diz ser.
 
-Eu trabalho com Akamai: tuning de WAF, exceção de bot, Site Shield, troubleshooting
-entre borda e origin. O console mostra o que a plataforma decidiu. Não mostra por quê,
+Eu trabalho com Akamai, ou seja, a console mostra o que a plataforma decidiu. Não mostra por quê,
 nem onde ela erra. Montei isso pra entender o mecanismo por fora.
 
 O que saiu foi um sensor que serve uma aplicação falsa, captura tudo que chega e emite
@@ -25,16 +24,18 @@ pouco, porque a resposta é quase sempre sim.
 
 O que interessa são duas perguntas separadas.
 
-A primeira é se tem alguém dirigindo. Dá pra ver no client stack: quais headers vieram,
+A primeira é se tem alguém dirigindo. Dá pra ver no client-side: quais headers vieram,
 em que ordem, se tem `Sec-Fetch-*`, se tem Client Hints. Navegador é muito previsível
-nisso. curl, requests e a maioria dos scanners não são, e essa diferença sobrevive a um
+nisso. qlqr curl, requests e a maioria dos scanners não são, e essa diferença sobrevive a um
 User-Agent falsificado.
 
-A segunda é o que o cliente quer. Isso só aparece no comportamento ao longo do tempo:
-quantos paths distintos ele varreu, se mandou payload com cara de exploit, se ficou
-rotacionando usuário no login.
+A segunda é o que o cliente quer. Isso só aparece no comportamento de longo prazo...
 
-Monitor de uptime pontua alto na primeira pergunta e zero na segunda. Credential
+Quantos paths distintos ele varreu?
+Mandou um payload com cara de exploit? 
+
+
+Monitor realtime sempre pontua alto na primeira pergunta e zero na segunda. Credential
 stuffing saindo de proxy residencial passa quase liso na primeira e é ataque na
 segunda. Juntar as duas num score só cria exatamente o falso positivo que faz o cliente
 pedir pra voltar a política toda pra modo alerta.
@@ -53,13 +54,8 @@ Então são dois scores. Quem decide o veredicto é o de intenção.
 | `unclassified_automation` | Automatizado, intenção ilegível | Só alerta |
 | `likely_human` | Fingerprint de navegador coerente, pouca velocity | Liberar |
 
-`unclassified_automation` não compete com os outros. É fila de espera. Tirar uma regra
-do alerta e botar em bloqueio precisa de evidência, e é ali que a evidência junta.
-
-### Todo veredicto vem com a evidência
-
-Nenhum score sai sem a lista de sinais que produziu ele. É o mínimo pra conseguir
-responder quando o cliente abre chamado perguntando por que a integração dele apanhou.
+`unclassified_automation` não compete com os outros. Tirar uma regra
+do alerta e botar em bloqueio precisa de evidência.
 
 ```json
 {
@@ -99,12 +95,12 @@ responder quando o cliente abre chamado perguntando por que a integração dele 
                               SQLite (WAL) ──▶ /_edl/dashboard
 ```
 
-O nginx não está aí de enfeite. É ele que estabelece o IP de origem que o sensor
-confia, sobrescrevendo o header sem perguntar. Honeypot que acredita no
-`X-Forwarded-For` que veio do fio tem dado controlado pelo atacante dentro dos próprios
+O nginx estabelece o IP de origem que o sensor confia, sobrescrevendo o header sem perguntar.
+
+Ps: Não tem como um Honeypot acreditar no`X-Forwarded-For` que veio do fio, isso só da o dado controlado pelo atacante dentro dos próprios
 agregados.
 
-Detalhe de design e threat model do sensor em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Detalhe de design e threat model do sensor em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). {tmj!}
 
 ## Rodando
 
@@ -136,8 +132,7 @@ pytest -q
 ```
 
 Dashboard em `http://127.0.0.1:8080/_edl/dashboard`. Rodando assim não tem edge na
-frente, então o `X-Edge-Client-IP` não é sobrescrito. Serve pra trabalhar local, não
-serve pra nada exposto.
+frente, então o `X-Edge-Client-IP` não é sobrescrito.
 
 ### Configuração
 
@@ -154,27 +149,16 @@ serve pra nada exposto.
 
 O sensor existe pra apanhar, então ele mesmo precisa ser chato de atacar.
 
-Não tem nada executável ali dentro. Toda resposta-isca é string estática: sem template
-com entrada do usuário, sem leitura de arquivo pelo path, sem desserialização. O login
-sempre falha, porque honeypot que deixa entrar vira ponto de apoio de atacante numa
-máquina sua.
+Não tem nada executável ali dentro. Toda resposta-isca é uma string estática e sem template, O login sempre falha.
 
-Senha não é gravada em claro nunca. Senha, token, cookie e header `Authorization` viram
-digest SHA-256 salgado antes de chegar no banco. Tentativa repetida continua se
-correlacionando, e eu nunca fico com credencial de terceiro utilizável na mão. Está em
+Senha não é gravada. Tudo vira hash SHA-256 antes de chegar no banco. Tentativa repetida continua se correlacionando,
+Eu nunca fico com credencial de terceiro utilizável na mão. Está em
 `tests/test_redact.py`, e se aquilo quebrar o laboratório não é seguro de rodar.
 
 O cliente também nunca descobre que foi classificado. O veredicto não sai em header,
-nem em status, nem em timing. Quem percebe que está sendo perfilado muda de
-comportamento, e aí o sensor não mede mais nada.
+nem em status. Quem percebe que está sendo "adjetivado" muda de comportamento, e aí o sensor não mede mais nada.
 
-> Antes de expor isso na internet: host isolado, sem acesso lateral a nada que importe,
-> `EDL_CREDENTIAL_SALT` único, e leia a política de abuso do seu provedor. Capturar
-> tráfego que mandaram pra sua infra é uma coisa. Onde você hospeda e o que faz com os
-> dados depois é problema seu, LGPD inclusa, já que IP de origem é dado pessoal. Com
-> `EDL_STORE_IP_RAW=false` fica só o hash.
-
-## O que ainda não funciona bem
+## O que ainda não funciona bem [Juro que vou trabalhar nesse cara]
 
 Velocity é chaveada por IP, então CGNAT e saída corporativa misturam gente. Descobri
 isso rodando o simulador local, onde todo perfil sai de `127.0.0.1`: um `GET /admin`
@@ -186,13 +170,6 @@ de autenticação de verdade, e um teste travando isso nos dois sentidos. A corr
 Não tem fingerprint de TLS. JA4 fica abaixo do proxy reverso e é o sinal de automação
 mais forte que existe. Enquanto não tiver, um cliente que reproduza headers de navegador
 direitinho passa como navegador.
-
-Os pesos foram no olho. Vieram de raciocínio sobre como esses clientes se comportam,
-validados contra perfis sintéticos e uma suíte de falso positivo. Não vieram de corpus
-rotulado.
-
-rDNS é best effort. Consulta cacheada e com timeout curto, e falha de resolver rebaixa
-crawler legítimo pra não verificado em vez de liberar por omissão.
 
 ## Testes
 
@@ -209,7 +186,7 @@ crawler legítimo pra não verificado em vez de liberar por omissão.
 
 ## Roadmap
 
-Uma branch por capacidade. O que vem, e por quê, está no [`ROADMAP.md`](ROADMAP.md).
+Uma branch por capacidade. O que vem por ai, e por quê, está no [`ROADMAP.md`](ROADMAP.md).
 
 ## Licença
 
