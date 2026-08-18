@@ -1,11 +1,10 @@
-"""Edge Deception Lab — capture service.
+"""Capture service.
 
-Serves an inert decoy surface, captures every request in full, fingerprints the
-client, classifies the behaviour and persists an explainable verdict.
+Serves the decoy surface, captures the full request, fingerprints the client,
+classifies it and stores the verdict with its signals.
 
-The analysis API lives under `/_edl/*`. That prefix is blocked at the edge layer
-(see `edge/nginx.conf`) so the dashboard is never reachable from the same
-listener the internet talks to.
+Analysis API lives under /_edl/*. nginx returns 404 for that prefix on the
+public listener, so the dashboard never shares a door with the internet.
 """
 
 from __future__ import annotations
@@ -32,11 +31,11 @@ USERNAME_FIELDS = ("username", "user", "email", "login", "usr", "log")
 
 
 def _client_ip(request: Request) -> str:
-    """Resolve the true client IP.
+    """Real client IP.
 
-    Only the configured edge header is trusted, and only because the edge layer
-    in this lab overwrites it on every request. Trusting `X-Forwarded-For`
-    blindly is how honeypots end up with attacker-controlled source data.
+    Only the edge header is trusted, and only because nginx overwrites it on
+    every request. Trusting X-Forwarded-For off the wire would put
+    attacker-controlled data straight into the velocity aggregates.
     """
     edge_value = request.headers.get(settings.trusted_edge_header)
     if edge_value:
@@ -82,13 +81,11 @@ app = FastAPI(
     description="Honeypot sensor with behavioural bot classification.",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None,       # the decoy surface must not advertise a framework
+    docs_url=None,       # a decoy that advertises FastAPI isn't imitating anything
     redoc_url=None,
     openapi_url=None,
 )
 
-
-# --------------------------------------------------------------------- API
 
 @app.get("/_edl/api/health")
 async def health() -> JSONResponse:
@@ -122,8 +119,6 @@ async def dashboard() -> Response:
         return JSONResponse({"error": "dashboard disabled"}, status_code=404)
     return FileResponse(STATIC_DIR / "dashboard.html")
 
-
-# ------------------------------------------------------------ decoy surface
 
 @app.api_route(
     "/{full_path:path}",
@@ -208,8 +203,8 @@ async def capture(request: Request, full_path: str) -> Response:
     elapsed_ms = (time.perf_counter() - started) * 1000
     response_headers = dict(decoy.headers or {})
     response_headers["Server"] = decoys.SERVER_BANNER
-    # Deliberately *not* echoing the verdict: the client must never learn it is
-    # being profiled.
+    # no verdict in the response. a client that notices it's being profiled
+    # changes behaviour and the sensor stops measuring anything
     response_headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
 
     if method == "HEAD":

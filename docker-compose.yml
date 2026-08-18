@@ -13,9 +13,7 @@ services:
       EDL_STORE_IP_RAW: ${EDL_STORE_IP_RAW:-true}
     volumes:
       - sensor-data:/data
-    # Bound to loopback: the sensor is reached through the edge, and the
-    # management surface is reached through the SSH tunnel documented in the
-    # README. Never publish this on 0.0.0.0.
+    # loopback only. traffic comes in through the edge, admin comes in over ssh
     ports:
       - "127.0.0.1:8081:8080"
     networks: [edl]

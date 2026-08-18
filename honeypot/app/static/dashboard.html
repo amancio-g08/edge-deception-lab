@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Edge Deception Lab — Traffic Analysis</title>
+<title>Edge Deception Lab</title>
 <style>
   :root {
     --font: system-ui, -apple-system, "Segoe UI", sans-serif;
   }
 
-  /* Light mode (default scope) */
+  /* light is the default scope, dark overrides below */
   .viz-root {
     color-scheme: light;
     --page:            #f9f9f7;
@@ -72,7 +72,7 @@
   h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
   .subtitle { color: var(--text-secondary); font-size: 13px; margin: 4px 0 24px; }
 
-  /* --- controls: one row above the charts --------------------------- */
+  /* controls */
   .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button {
     font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px;
@@ -83,7 +83,7 @@
   button[aria-pressed="true"] { color: var(--text-primary); font-weight: 600;
                                 border-color: var(--text-muted); }
 
-  /* --- stat tiles ---------------------------------------------------- */
+  /* stat tiles */
   .tiles { display: grid; gap: 12px; margin: 20px 0 28px;
            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   .tile { background: var(--surface-1); border: 1px solid var(--border);
@@ -92,7 +92,7 @@
   .tile .value { font-size: 30px; font-weight: 600; line-height: 1.1; }
   .tile .note  { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 
-  /* --- cards --------------------------------------------------------- */
+  /* cards */
   .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
   .card { background: var(--surface-1); border: 1px solid var(--border);
           border-radius: 12px; padding: 18px 20px 20px; }
@@ -100,13 +100,13 @@
   .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 16px; }
   .card.wide { grid-column: 1 / -1; }
 
-  /* --- legend -------------------------------------------------------- */
+  /* legend */
   .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-secondary);
             margin-bottom: 12px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 
-  /* --- horizontal bars ------------------------------------------------ */
+  /* horizontal bars */
   .bars { display: flex; flex-direction: column; gap: 10px; }
   .bar-row { display: grid; grid-template-columns: minmax(120px, 34%) 1fr auto;
              gap: 12px; align-items: center; font-size: 12.5px; }
@@ -119,7 +119,7 @@
   .bar-value { color: var(--text-primary); font-variant-numeric: tabular-nums;
                font-size: 12.5px; min-width: 3ch; text-align: right; }
 
-  /* --- line chart ----------------------------------------------------- */
+  /* line chart */
   svg { display: block; width: 100%; height: auto; overflow: visible; }
   .axis-label { font-size: 10.5px; fill: var(--text-muted); }
   .tooltip {
@@ -133,7 +133,7 @@
   .tooltip .t-row { display: flex; justify-content: space-between; gap: 14px; }
   .tooltip .t-row b { font-variant-numeric: tabular-nums; }
 
-  /* --- tables --------------------------------------------------------- */
+  /* tables */
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th { text-align: left; font-weight: 600; color: var(--text-secondary);
        padding: 8px 10px; border-bottom: 1px solid var(--baseline); font-size: 11.5px;
@@ -210,8 +210,7 @@
     </div>
   </section>
 
-  <!-- Inside .viz-root: the tooltip reads the same surface/ink custom properties
-       as the charts, so it stays legible in both themes. -->
+  <!-- has to live inside .viz-root or it loses the theme variables -->
   <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
 </div>
 
@@ -252,7 +251,6 @@
   }
   const hideTooltip = () => { tooltip.style.opacity = "0"; };
 
-  // ---------------------------------------------------------------- tiles
   function renderTiles(s) {
     const automated = s.automated_share;
     document.getElementById("tiles").innerHTML = `
@@ -278,7 +276,6 @@
       </div>`;
   }
 
-  // --------------------------------------------------------- bar charts
   function renderBars(target, rows) {
     const el = document.getElementById(target);
     if (!rows.length) { el.innerHTML = `<p class="empty">No traffic in this window.</p>`; return; }
@@ -305,11 +302,10 @@
     });
   }
 
-  // -------------------------------------------------------- line chart
   function renderTimeline(points) {
     const host = document.getElementById("timeline");
     if (points.length < 2) {
-      host.innerHTML = `<p class="empty">Not enough buckets to plot yet — generate some traffic.</p>`;
+      host.innerHTML = `<p class="empty">Not enough buckets to plot yet. Generate some traffic.</p>`;
       return;
     }
 
@@ -384,7 +380,6 @@
     });
   }
 
-  // ------------------------------------------------------------ tables
   function renderSources(rows) {
     const el = document.getElementById("sources");
     if (!rows.length) { el.innerHTML = `<tbody><tr><td class="empty">No sources yet.</td></tr></tbody>`; return; }
@@ -422,7 +417,6 @@
   const escapeHtml = (s) =>
     String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  // -------------------------------------------------------------- load
   async function load() {
     const [summary, events] = await Promise.all([
       fetch(`/_edl/api/summary?hours=${hours}`).then((r) => r.json()),

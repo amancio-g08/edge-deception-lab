@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Synthetic traffic generator for the local lab.
+"""Replays client profiles against the local lab.
 
-Replays realistic client *profiles* against your own sensor so the classifier
-and dashboard can be exercised without waiting for the internet to show up. It
-is a test fixture, not an attack tool: every payload is inert, the target is
-hard-defaulted to localhost, and pointing it at a host you do not operate is
-both refused by default and pointless — the "exploits" are strings, not
-exploits.
+Test fixture, not an attack tool. Payloads are inert strings, the target
+defaults to loopback and anything else needs an explicit flag.
 
-    python tools/simulate_traffic.py --requests 400
+    python tools/simulate_traffic.py --rounds 20 --simulate-edge
 """
 
 from __future__ import annotations
@@ -62,18 +58,13 @@ INERT_PROBES = [
 USERNAMES = ["admin", "root", "test", "gabriel", "support", "administrator",
              "user1", "info", "sa", "operator"]
 
-# Synthetic source addresses, one pool per profile, drawn from RFC 5737
-# documentation ranges so nothing here can collide with a real network.
+# RFC 5737 documentation ranges, so nothing collides with a real network.
+#   198.51.100.0/24 -> hostile profiles
+#   203.0.113.0/24  -> legitimate profiles
 #
-#   198.51.100.0/24 — hostile profiles
-#   203.0.113.0/24  — legitimate profiles
-#
-# These are injected as X-Edge-Client-IP, the header the sensor trusts. That is
-# safe precisely because it is only meaningful when the sensor is reached
-# directly: nginx overwrites the header unconditionally, so the same trick sent
-# through the edge is discarded before the sensor ever sees it. Without this the
-# lab can only ever observe one source, and every velocity aggregate collapses
-# into a single profile.
+# injected as X-Edge-Client-IP. only works hitting the sensor directly, nginx
+# overwrites that header so the same trick through the edge goes nowhere.
+# without it every profile shares one address and velocity collapses.
 SOURCE_POOLS = {
     "human": ["203.0.113.14", "203.0.113.27", "203.0.113.55", "203.0.113.91"],
     "verified_crawler": ["203.0.113.100"],
@@ -159,11 +150,9 @@ def main() -> int:
                         help="Required to target a non-loopback host you operate")
     parser.add_argument(
         "--simulate-edge", action="store_true",
-        help="Inject synthetic source addresses (RFC 5737 ranges) as the trusted "
-             "edge header. Only meaningful when hitting the sensor directly — "
-             "nginx overwrites the header, so this cannot forge a source through "
-             "the edge. Without it every profile shares one address and the "
-             "velocity aggregates collapse into a single client.",
+        help="Give each profile a synthetic source address (RFC 5737). Only "
+             "works against the sensor directly; nginx overwrites the header. "
+             "Without it every profile shares one address.",
     )
     args = parser.parse_args()
 

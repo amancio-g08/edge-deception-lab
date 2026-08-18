@@ -1,8 +1,7 @@
-"""SQLite persistence layer.
+"""SQLite storage.
 
-SQLite is a deliberate choice, not a shortcut: the lab must be clonable and
-runnable with `docker compose up` and no external service. WAL mode plus a
-single writer keeps concurrent reads from the dashboard from blocking capture.
+One file, no external service, so the whole lab clones and runs with one
+command. WAL keeps the dashboard reads from blocking capture writes.
 """
 
 from __future__ import annotations
@@ -60,7 +59,7 @@ def iso(dt: datetime) -> str:
 
 
 class EventStore:
-    """Thread-safe SQLite store for captured events."""
+    """Thread-safe store for captured events."""
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -73,8 +72,6 @@ class EventStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
-
-    # ------------------------------------------------------------------ core
 
     @contextmanager
     def _cursor(self) -> Iterator[sqlite3.Cursor]:
@@ -90,7 +87,7 @@ class EventStore:
             self._conn.close()
 
     def record(self, event: dict[str, Any]) -> int:
-        """Insert one captured event. Returns the row id."""
+        """Insert one event, return the row id."""
         columns = (
             "ts", "src_ip", "src_ip_hash", "edge_ip", "method", "path", "query",
             "status", "decoy", "content_type", "body_size", "body_redacted",
@@ -107,10 +104,8 @@ class EventStore:
             )
             return int(cur.lastrowid or 0)
 
-    # ------------------------------------------------------- velocity context
-
     def velocity_for(self, src_ip_hash: str, window_seconds: int) -> dict[str, Any]:
-        """Sliding-window aggregates used by the classifier."""
+        """Sliding-window aggregates for the classifier."""
         since = iso(utc_now() - timedelta(seconds=window_seconds))
         with self._cursor() as cur:
             row = cur.execute(
@@ -128,14 +123,12 @@ class EventStore:
             ).fetchone()
 
         return {
-            "requests": (row["requests"] or 0) + 1,  # include the in-flight request
+            "requests": (row["requests"] or 0) + 1,  # count the request being handled
             "distinct_paths": max(row["distinct_paths"] or 0, 1),
             "distinct_usernames": row["distinct_usernames"] or 0,
             "distinct_user_agents": max(row["distinct_user_agents"] or 0, 1),
             "not_found_ratio": float(row["not_found_ratio"] or 0.0),
         }
-
-    # ------------------------------------------------------------ dashboard
 
     def summary(self, hours: int = 24) -> dict[str, Any]:
         since = iso(utc_now() - timedelta(hours=hours))
@@ -219,17 +212,11 @@ class EventStore:
         return [{"client": r["client"] or "unknown", "count": r["n"]} for r in rows]
 
     def timeline(self, hours: int = 24) -> list[dict[str, Any]]:
-        """Automated vs. legitimate over time, bucketed to fit the window.
-
-        Granularity adapts so a freshly deployed sensor still produces a readable
-        curve within minutes instead of a single hourly bar.
-        """
+        """Automated vs legitimate over time."""
         since = iso(utc_now() - timedelta(hours=hours))
 
-        # Candidate granularities, coarsest-first for the selected window. A
-        # freshly deployed sensor has minutes of data inside a 24h window, and a
-        # single bucket is not a chart — so fall through to a finer grain until
-        # there is actually something to plot.
+        # coarsest first, then fall through to finer buckets. a fresh sensor has
+        # minutes of data inside a 24h window and one bucket isn't a chart
         if hours <= 2:
             candidates = [(16, "")]
         elif hours <= 48:

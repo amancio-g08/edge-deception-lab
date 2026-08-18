@@ -1,12 +1,10 @@
-"""Request fingerprinting.
+"""Client-stack fingerprinting.
 
-The premise: a real browser is a very constrained thing. It sends a stable set
-of headers, in a stable order, with a stable set of `Sec-Fetch-*` metadata. HTTP
-clients used for automation — curl, python-requests, Go's net/http, sqlmap,
-headless drivers — deviate in ways that survive a spoofed User-Agent.
+Browsers send a predictable set of headers, in a predictable order, with
+Sec-Fetch-* metadata. curl, requests, Go's net/http and most scanners don't.
+Those gaps hold up even when the User-Agent is spoofed.
 
-This module extracts those deviations as structured signals. It never decides
-anything on its own; `classifier.py` consumes what it produces.
+Produces signals only. The classifier decides what they mean.
 """
 
 from __future__ import annotations
@@ -15,8 +13,7 @@ import hashlib
 import re
 from dataclasses import asdict, dataclass, field
 
-# Headers a mainstream browser emits on a top-level navigation. Absence is a
-# much stronger signal than presence, since presence is trivially spoofed.
+# absence is the useful signal here, presence is trivial to fake
 BROWSER_BASELINE_HEADERS = (
     "accept",
     "accept-encoding",
@@ -24,8 +21,7 @@ BROWSER_BASELINE_HEADERS = (
     "user-agent",
 )
 
-# Fetch Metadata headers. Shipped by every current Chromium/Firefox build and
-# almost never reproduced by scripted clients.
+# Fetch Metadata. every current browser sends these, scripted clients almost never do
 SEC_FETCH_HEADERS = (
     "sec-fetch-site",
     "sec-fetch-mode",
@@ -33,12 +29,10 @@ SEC_FETCH_HEADERS = (
     "sec-fetch-user",
 )
 
-# Client Hints, Chromium-only. Their presence alongside a Firefox/Safari UA is a
-# contradiction worth flagging.
+# Chromium only. seeing these next to a Firefox UA is a contradiction
 CLIENT_HINT_HEADERS = ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform")
 
-# User-Agent substrings that self-identify automation. Attackers who bother to
-# spoof will not appear here; the ones who do not bother are the majority.
+# whoever bothers to spoof won't show up here. plenty don't bother
 TOOL_UA_SIGNATURES = {
     "sqlmap": "sqlmap",
     "nikto": "nikto",
@@ -75,9 +69,8 @@ TOOL_UA_SIGNATURES = {
     "selenium": "selenium",
 }
 
-# Declared crawlers, with the reverse-DNS suffixes that make the claim
-# verifiable. This mirrors how a real bot-management product separates a
-# "verified" Googlebot from anything that merely says it is one.
+# crawler name -> rDNS suffixes that make the claim checkable.
+# same idea as verified bot categories in a commercial bot manager.
 DECLARED_CRAWLERS = {
     "googlebot": (".googlebot.com", ".google.com"),
     "bingbot": (".search.msn.com",),
@@ -99,8 +92,6 @@ _CHROMIUM_UA_RE = re.compile(r"\b(chrome|chromium|edg)/", re.IGNORECASE)
 
 @dataclass
 class Fingerprint:
-    """Structured view of what the client looked like on the wire."""
-
     ua_raw: str = ""
     ua_family: str = "unknown"
     header_count: int = 0
@@ -121,18 +112,16 @@ class Fingerprint:
 
 
 def header_order_hash(header_names: list[str]) -> str:
-    """Stable digest of header ordering.
+    """Hash of header names in arrival order.
 
-    Header order is a property of the HTTP client implementation, not of the
-    request content. Two requests with the same order hash very likely came out
-    of the same stack, even across different User-Agent strings.
+    Ordering comes from the HTTP client implementation, not from the request
+    content, so it stays stable even when the UA string changes.
     """
     normalized = ",".join(name.lower() for name in header_names)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def detect_tool(user_agent: str) -> str | None:
-    """Return a normalized tool name when the UA self-identifies automation."""
     ua = (user_agent or "").lower()
     for needle, label in TOOL_UA_SIGNATURES.items():
         if needle in ua:
@@ -141,7 +130,7 @@ def detect_tool(user_agent: str) -> str | None:
 
 
 def detect_declared_crawler(user_agent: str) -> str | None:
-    """Return the crawler a UA claims to be, without validating the claim."""
+    """What the UA claims to be. Says nothing about whether it's true."""
     ua = (user_agent or "").lower()
     for name in DECLARED_CRAWLERS:
         if name in ua:
@@ -150,11 +139,10 @@ def detect_declared_crawler(user_agent: str) -> str | None:
 
 
 def verify_crawler(name: str, hostname: str | None) -> bool:
-    """Validate a crawler claim against its published reverse-DNS suffixes.
+    """Check a crawler claim against its published rDNS suffixes.
 
-    `hostname` is expected to come from a forward-confirmed reverse DNS lookup
-    (PTR, then A/AAAA back to the same address). Passing an unconfirmed PTR here
-    would make the check spoofable.
+    hostname must come from a forward-confirmed lookup. An unconfirmed PTR here
+    would make this spoofable.
     """
     if not hostname:
         return False
@@ -164,7 +152,7 @@ def verify_crawler(name: str, hostname: str | None) -> bool:
 
 
 def classify_ua_family(user_agent: str) -> str:
-    """Coarse UA bucket, used for reporting rather than for decisions."""
+    """Rough bucket for reporting. Not used for decisions."""
     ua = (user_agent or "").lower()
     if not ua:
         return "absent"
@@ -188,11 +176,7 @@ def build_fingerprint(
     header_order: list[str],
     rdns_hostname: str | None = None,
 ) -> Fingerprint:
-    """Assemble a `Fingerprint` from a captured request.
-
-    `headers` should be lowercase-keyed. `header_order` preserves the order the
-    headers arrived in, which is lost once they are put in a dict.
-    """
+    """headers must be lowercase-keyed. header_order keeps what the dict loses."""
     lowered = {k.lower(): v for k, v in headers.items()}
     ua = lowered.get("user-agent", "")
 
