@@ -9,7 +9,7 @@ Português · [English](README.en.md)
 Honeypot que classifica quem bate nele pelo comportamento, e não pelo que o cliente
 diz ser.
 
-Eu trabalho com Akamai, ou seja, a console mostra o que a plataforma decidiu. Não mostra por quê,
+Eu trabalho com Akamai, a console mostra o que a plataforma decidiu. Não mostra por quê,
 nem onde ela erra. Montei isso pra entender o mecanismo por fora.
 
 O que saiu foi um sensor que serve uma aplicação falsa, captura tudo que chega e emite
