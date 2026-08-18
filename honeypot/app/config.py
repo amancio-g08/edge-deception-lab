@@ -1,8 +1,4 @@
-"""Runtime configuration, sourced from environment variables.
-
-Every knob has a safe default so the lab runs with `docker compose up` and no
-`.env` file at all.
-"""
+"""Settings loaded from environment variables."""
 
 from __future__ import annotations
 
@@ -30,36 +26,30 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    """Immutable settings snapshot."""
-
-    # --- storage -------------------------------------------------------
+    # storage
     db_path: Path = field(
         default_factory=lambda: Path(os.getenv("EDL_DB_PATH", "/data/events.db"))
     )
 
-    # --- capture -------------------------------------------------------
+    # capture
     max_body_bytes: int = field(default_factory=lambda: _env_int("EDL_MAX_BODY_BYTES", 8192))
     trusted_edge_header: str = field(
         default_factory=lambda: os.getenv("EDL_EDGE_IP_HEADER", "X-Edge-Client-IP")
     )
 
-    # --- privacy -------------------------------------------------------
-    # Credentials submitted to the decoy login are NEVER stored in clear text.
-    # We keep a salted hash so repeat attempts can be correlated without the
-    # operator ever holding a usable password.
+    # privacy. passwords are hashed, never stored raw
     credential_salt: str = field(
         default_factory=lambda: os.getenv("EDL_CREDENTIAL_SALT", "edge-deception-lab")
     )
     store_ip_raw: bool = field(default_factory=lambda: _env_bool("EDL_STORE_IP_RAW", True))
 
-    # --- classification -------------------------------------------------
-    # Sliding window used for velocity signals (requests / distinct paths).
+    # classification
     velocity_window_seconds: int = field(
         default_factory=lambda: _env_int("EDL_VELOCITY_WINDOW", 300)
     )
     verify_bot_rdns: bool = field(default_factory=lambda: _env_bool("EDL_VERIFY_BOT_RDNS", True))
 
-    # --- dashboard ------------------------------------------------------
+    # dashboard
     dashboard_enabled: bool = field(
         default_factory=lambda: _env_bool("EDL_DASHBOARD_ENABLED", True)
     )

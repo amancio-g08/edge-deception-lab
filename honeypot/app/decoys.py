@@ -1,16 +1,10 @@
-"""Decoy surface.
+"""The fake app.
 
-Every response served here is static and inert. Nothing is parsed, evaluated or
-executed; the "vulnerable app" is a facade whose only job is to be interesting
-enough that an automated client keeps going and reveals its behaviour.
+Everything here is a static string. No templating of user input, no file reads
+driven by the path, no deserialization. If the honeypot can be popped it stops
+being a sensor and becomes someone's foothold.
 
-Two rules govern this file:
-
-1. **Nothing exploitable.** No template rendering of user input, no file reads
-   driven by the request path, no deserialization. A honeypot that can be
-   compromised is an attacker's foothold, not a sensor.
-2. **Nothing real.** All fake data is obviously synthetic on inspection, so a
-   scraped copy cannot be passed off as a genuine leak.
+Fake data is obviously fake so a scraped copy can't be passed off as a real leak.
 """
 
 from __future__ import annotations
@@ -66,7 +60,6 @@ INDEX_PAGE = _html(
     """,
 )
 
-# Synthetic catalogue. Obvious placeholders by design.
 FAKE_PRODUCTS = [
     {"id": i, "sku": f"SAMPLE-{i:04d}", "name": f"Sample Item {i}", "price": 10.0 + i}
     for i in range(1, 26)
@@ -92,9 +85,8 @@ STATIC_DECOYS: dict[str, DecoyResponse] = {
     ),
 }
 
-# Paths that a scanner expects to find, answered the way a hardened server would
-# answer. Returning 404 rather than the "leaked" content keeps the lab from
-# rewarding the probe while still recording that it happened.
+# paths scanners expect to find. answered like a hardened server would answer:
+# 404, so the probe gets recorded without being rewarded
 DENY_DECOYS = (
     "/.env",
     "/.git",
@@ -117,12 +109,12 @@ LOGIN_FAILED = DecoyResponse(
 
 
 def resolve(method: str, path: str) -> DecoyResponse:
-    """Pick the response for a request. Pure lookup — never touches the filesystem."""
+    """Pure lookup. Never touches the filesystem."""
     normalized = path.rstrip("/") or "/"
 
     if method.upper() == "POST" and normalized in {"/login", "/wp-login.php", "/api/v1/auth"}:
-        # Always fail. A honeypot that grants access invites an attacker to
-        # spend real effort inside it, which is a liability rather than a signal.
+        # always fail. letting someone in means they start doing real work
+        # inside a box I own
         return LOGIN_FAILED
 
     if normalized in STATIC_DECOYS:

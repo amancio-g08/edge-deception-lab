@@ -1,8 +1,7 @@
 """Redaction tests.
 
-These are the tests that matter most for operating the lab legally and safely:
-if any of them fail, the honeypot is storing third-party credentials in clear
-text.
+If any of these fail the honeypot is storing third-party credentials in clear
+text, which is the one bug here that actually creates liability.
 """
 
 from __future__ import annotations

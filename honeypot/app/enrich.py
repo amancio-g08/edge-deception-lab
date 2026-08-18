@@ -1,9 +1,7 @@
-"""Source enrichment: forward-confirmed reverse DNS.
+"""Forward-confirmed reverse DNS.
 
-FCrDNS is the check a production bot manager runs before trusting a crawler's
-identity claim: resolve the PTR record for the source address, then resolve that
-hostname back and confirm the original address is in the answer. A PTR alone is
-attacker-controlled and proves nothing.
+PTR alone proves nothing, it's controlled by whoever owns the address block.
+Resolve PTR, resolve the hostname back, require the original IP in the answer.
 """
 
 from __future__ import annotations
@@ -24,10 +22,10 @@ def is_private(ip: str) -> bool:
 
 @lru_cache(maxsize=4096)
 def forward_confirmed_rdns(ip: str) -> str | None:
-    """Return the hostname only when PTR and forward lookup agree.
+    """Hostname if PTR and forward lookup agree, otherwise None.
 
-    Cached: the same scanner will hit hundreds of paths, and a DNS round trip
-    per request would dominate response time and leak timing information.
+    Cached because a scanner hits hundreds of paths and a DNS round trip per
+    request would dominate response time (and leak timing).
     """
     if not ip or is_private(ip):
         return None

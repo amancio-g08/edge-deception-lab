@@ -1,13 +1,16 @@
-"""Behavioural classification of captured requests.
+"""Behavioural classification.
 
-The design goal is the one that matters in real bot management: **every verdict
-must be explainable**. A score with no signal list behind it cannot be defended
-to a customer when it produces a false positive, so the classifier returns the
-individual signals that fired, their weights, and the resulting margin.
+Two axes, scored separately:
+  automation -> is a human driving this? comes from the client stack
+  intent     -> what is it trying to do? comes from behaviour over time
 
-Categories are deliberately behavioural rather than identity-based. "This client
-enumerated 40 distinct paths in 60 seconds" survives a spoofed User-Agent;
-"this client said it was curl" does not.
+Keeping them apart matters. An uptime monitor is fully automated and harmless,
+credential stuffing through residential proxies looks almost like a browser and
+isn't. Merging both into one score is how you end up with a bot policy that
+gets rolled back to alert-only.
+
+Every verdict ships the signals that produced it. You can't defend a block to a
+customer with a number alone.
 """
 
 from __future__ import annotations
@@ -29,8 +32,7 @@ class Verdict(str, Enum):
     LIKELY_HUMAN = "likely_human"
 
 
-# Paths that exist only to be found by someone looking for them. A request for
-# `/.env` is not a mistake a browser makes.
+# no browser asks for these by accident
 SENSITIVE_ARTIFACT_PATHS = (
     "/.env",
     "/.git",
@@ -64,8 +66,7 @@ ADMIN_SURFACE_PATHS = (
     "/console",
 )
 
-# Exploit-shaped payloads. Matched against the raw path + query only; the point
-# is detecting *probing*, not blocking, since nothing here is a real app.
+# path + query only. we're detecting probing, not blocking. nothing here is a real app
 EXPLOIT_PATTERNS = (
     (re.compile(r"\.\./|\.\.%2f", re.IGNORECASE), "path-traversal"),
     (re.compile(r"union[\s+]+select|sleep\(\d|benchmark\(", re.IGNORECASE), "sqli-probe"),
@@ -77,14 +78,11 @@ EXPLOIT_PATTERNS = (
 
 LOGIN_PATHS = ("/login", "/signin", "/auth", "/wp-login.php", "/api/v1/auth", "/session")
 
-# Cheap, high-volume content endpoints a scraper would iterate.
 CONTENT_PATHS = ("/api/v1/products", "/api/v1/customers", "/catalog", "/search")
 
 
 @dataclass
 class Signal:
-    """One piece of evidence, with the category it argues for."""
-
     name: str
     weight: float
     verdict: Verdict
@@ -101,7 +99,7 @@ class Signal:
 
 @dataclass
 class VelocityContext:
-    """Aggregates for the source IP over the configured sliding window."""
+    """Aggregates for the source over the configured sliding window."""
 
     requests: int = 1
     distinct_paths: int = 1
@@ -110,9 +108,8 @@ class VelocityContext:
     not_found_ratio: float = 0.0
 
 
-# Verdicts that describe *what the client is trying to do*. These are ranked
-# against each other. `UNCLASSIFIED_AUTOMATION` is deliberately excluded: it is a
-# fallback bucket, not a competitor — see `classify()`.
+# ranked against each other. UNCLASSIFIED_AUTOMATION is not in here on purpose,
+# see classify()
 INTENT_VERDICTS = (
     Verdict.VULN_SCANNER,
     Verdict.CREDENTIAL_ATTACK,
@@ -184,8 +181,8 @@ def _fingerprint_signals(fp: Fingerprint) -> list[Signal]:
             Signal("crawler_rdns_verified", 8.0, Verdict.VERIFIED_CRAWLER, fp.declared_crawler)
         )
     elif fp.declared_crawler and not fp.crawler_verified:
-        # Impersonating a search engine is one of the most reliable malicious
-        # indicators there is: legitimate crawlers always pass rDNS.
+        # faking a search engine is one of the cleanest malicious indicators
+        # there is, the real ones always pass rDNS
         signals.append(
             Signal("crawler_impersonation", 5.0, Verdict.CONTENT_SCRAPER, fp.declared_crawler)
         )
@@ -194,8 +191,8 @@ def _fingerprint_signals(fp: Fingerprint) -> list[Signal]:
         signals.append(Signal("no_user_agent", 2.5, Verdict.UNCLASSIFIED_AUTOMATION))
 
     if fp.claims_browser and not fp.has_sec_fetch:
-        # A UA claiming a modern browser with no Fetch Metadata is a
-        # contradiction: the headers are emitted by the browser itself.
+        # the browser emits Sec-Fetch-* itself, so a modern browser UA without
+        # them doesn't add up
         signals.append(
             Signal("browser_ua_without_sec_fetch", 3.0, Verdict.UNCLASSIFIED_AUTOMATION)
         )
@@ -238,11 +235,9 @@ def _velocity_signals(ctx: VelocityContext, is_login_attempt: bool) -> list[Sign
             Signal("high_404_ratio", 2.5, Verdict.VULN_SCANNER, f"{ctx.not_found_ratio:.0%}")
         )
 
-    # Username-rotation signals apply only to a request that is itself an
-    # authentication attempt. Without this gate, one credential-stuffing run
-    # behind a NAT or corporate proxy would recolour every unrelated request
-    # from the same address — the shared-IP false positive that makes customers
-    # stop trusting a bot policy.
+    # only score username rotation on an actual auth attempt. velocity is keyed
+    # by IP, so without this gate one stuffing run behind a NAT repaints every
+    # unrelated request from the same address
     if is_login_attempt:
         if ctx.distinct_usernames >= 5:
             signals.append(
@@ -282,7 +277,7 @@ def _velocity_signals(ctx: VelocityContext, is_login_attempt: bool) -> list[Sign
 
 
 def _human_signals(fp: Fingerprint, ctx: VelocityContext) -> list[Signal]:
-    """Evidence *against* automation. Without these, everything looks like a bot."""
+    """Evidence against automation. Without these everything looks like a bot."""
     signals: list[Signal] = []
 
     if fp.has_sec_fetch and fp.claims_browser and not fp.tool_signature:
@@ -308,7 +303,6 @@ def classify(
     velocity: VelocityContext | None = None,
     status_code: int = 200,
 ) -> Classification:
-    """Score a single request and return an explainable verdict."""
     ctx = velocity or VelocityContext()
 
     normalized_method = method.upper()
@@ -329,9 +323,8 @@ def classify(
     for signal in signals:
         scores[signal.verdict.value] += signal.weight
 
-    # A verified crawler short-circuits everything else. This mirrors the
-    # allowlist behaviour of a production bot manager: once identity is proven
-    # by forward-confirmed rDNS, behavioural heuristics must not override it.
+    # verified crawler wins outright. same as an allowlist in a real bot manager:
+    # once identity is proven by rDNS, behaviour doesn't get to override it
     if scores[Verdict.VERIFIED_CRAWLER.value] > 0:
         return Classification(
             verdict=Verdict.VERIFIED_CRAWLER,
@@ -345,11 +338,8 @@ def classify(
     automation_score = scores[Verdict.UNCLASSIFIED_AUTOMATION.value]
     human_score = scores[Verdict.LIKELY_HUMAN.value]
 
-    # Two questions, answered separately — the same split a production bot
-    # manager makes. "Is this automated?" is a property of the client stack.
-    # "What is it trying to do?" is a property of the behaviour. Collapsing them
-    # into one ranking lets a noisy client fingerprint outvote an unambiguous
-    # attack pattern, which is exactly the false-negative that matters.
+    # intent verdicts compete among themselves. automation is a separate axis,
+    # otherwise a noisy fingerprint outvotes an obvious attack pattern
     intent_ranked = sorted(
         ((v, scores[v.value]) for v in INTENT_VERDICTS),
         key=lambda kv: kv[1],
@@ -369,17 +359,15 @@ def classify(
         )
 
     if top_score > 0 and top_score >= human_score:
-        # Margin over the runner-up intent, plus absolute evidence, plus a small
-        # corroboration bonus when the client also *looks* automated.
+        # margin over runner-up + absolute evidence + small bonus when the
+        # client also looks automated. 10 vs 9 shouldn't read like 10 vs 0
         margin = (top_score - runner_up) / top_score
         magnitude = min(top_score / 8.0, 1.0)
         corroboration = 0.15 * min(automation_score / 8.0, 1.0)
         return _finish(top_intent, 0.35 + 0.5 * (0.5 * margin + 0.5 * magnitude) + corroboration)
 
     if automation_score > human_score:
-        # Automated, but the intent is not yet legible. In production this is the
-        # bucket that goes to alert-only until a pattern emerges — never straight
-        # to block.
+        # automated but intent unclear. this is the alert-only queue, never a block
         return _finish(
             Verdict.UNCLASSIFIED_AUTOMATION, 0.35 + 0.5 * min(automation_score / 8.0, 1.0)
         )

@@ -1,9 +1,7 @@
-"""Credential and secret redaction.
+"""Hashes anything that looks like a secret before it hits storage.
 
-A honeypot that logs plaintext passwords is a liability, not an asset: the
-operator ends up holding a credential dump harvested from third parties. This
-module guarantees that anything resembling a secret is reduced to a salted
-digest before it ever reaches storage.
+Storing plaintext passwords collected from attackers would mean holding a
+credential dump from third parties. Everything here is one-way.
 """
 
 from __future__ import annotations
@@ -13,8 +11,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qs
 
-# Field names treated as secret-bearing, matched case-insensitively as a
-# substring so `user_password`, `passwd` and `apiKey` are all covered.
+# matched as substrings, case insensitive, so passwd / user_password / apiKey all hit
 SECRET_FIELD_PATTERNS = (
     "pass",
     "pwd",
@@ -35,22 +32,19 @@ _JSON_SECRET_RE = re.compile(
 
 
 def is_secret_field(name: str) -> bool:
-    """True when a form/JSON field name looks like it carries a secret."""
     lowered = name.lower()
     return any(pattern in lowered for pattern in SECRET_FIELD_PATTERNS)
 
 
 def digest(value: str, salt: str) -> str:
-    """Salted SHA-256, truncated to 16 hex chars.
+    """Salted sha256, truncated to 16 chars.
 
-    Short enough to eyeball in a report, long enough that correlating repeat
-    attempts stays reliable, and one-way so the plaintext is unrecoverable.
+    Short enough to read in a report, long enough to correlate repeat attempts.
     """
     return hashlib.sha256(f"{salt}:{value}".encode("utf-8")).hexdigest()[:16]
 
 
 def redact_form_body(body: str, salt: str) -> str:
-    """Redact secret values in an urlencoded form body, preserving structure."""
     if not body:
         return body
     try:
@@ -69,8 +63,7 @@ def redact_form_body(body: str, salt: str) -> str:
 
 
 def redact_json_body(body: str, salt: str) -> str:
-    """Redact secret values in a JSON body without needing it to be valid JSON."""
-
+    # regex instead of json.loads because attacker payloads are often malformed
     def _replace(match: re.Match[str]) -> str:
         raw = match.group(0)
         value_start = raw.index(":", raw.index('"', 1)) + 1
@@ -81,14 +74,13 @@ def redact_json_body(body: str, salt: str) -> str:
 
 
 def redact_body(body: str, content_type: str, salt: str) -> str:
-    """Dispatch redaction based on the declared content type."""
     ctype = (content_type or "").lower()
     if "json" in ctype:
         return redact_json_body(body, salt)
     if "x-www-form-urlencoded" in ctype:
         return redact_form_body(body, salt)
-    # Unknown content type: keep it, but strip anything that looks like a
-    # `key=value` secret pair inline.
+
+    # unknown type: still catch inline key=value secrets
     return re.sub(
         r"(?i)\b((?:%s)\w*)=([^&\s]+)" % "|".join(SECRET_FIELD_PATTERNS),
         lambda m: f"{m.group(1)}=sha256:{digest(m.group(2), salt)}",
@@ -97,7 +89,6 @@ def redact_body(body: str, content_type: str, salt: str) -> str:
 
 
 def redact_headers(headers: dict[str, str], salt: str) -> dict[str, str]:
-    """Redact header values that carry session material."""
     cleaned: dict[str, Any] = {}
     for name, value in headers.items():
         if is_secret_field(name):

@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY honeypot/app ./honeypot/app
 COPY honeypot/__init__.py ./honeypot/__init__.py
 
-# The sensor writes only to /data and never needs to own its own code.
+# only /data is writable, the app code is not owned by the runtime user
 RUN useradd --system --uid 10001 --create-home sensor \
     && mkdir -p /data \
     && chown -R sensor:sensor /data

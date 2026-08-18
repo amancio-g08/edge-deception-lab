@@ -1,8 +1,4 @@
-"""Behavioural classifier tests.
-
-Each test encodes a scenario that should be recognisable to anyone who has
-looked at WAF logs: what the traffic looked like, and what the verdict has to be.
-"""
+"""Classifier tests. Each one is a traffic pattern I've seen in WAF logs."""
 
 from __future__ import annotations
 
@@ -113,7 +109,7 @@ def test_verified_crawler_short_circuits_behavioural_signals():
         "user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
         "accept": "*/*",
     }
-    # Aggressive crawl pattern that would otherwise score as enumeration.
+    # crawl pattern aggressive enough to score as enumeration on its own
     result = classify(
         method="GET",
         path="/api/v1/products",
@@ -143,7 +139,7 @@ def test_unverified_googlebot_is_treated_as_impersonation():
 
 
 def test_path_enumeration_is_flagged_regardless_of_user_agent():
-    """A spoofed browser UA must not rescue an obvious directory sweep."""
+    # a spoofed browser UA shouldn't rescue an obvious directory sweep
     result = classify(
         method="GET",
         path="/backup",
@@ -181,6 +177,6 @@ def test_every_verdict_carries_its_evidence():
         fingerprint=fp({"host": "h", "user-agent": "gobuster/3.6"}),
         status_code=404,
     )
-    assert result.signals, "a verdict with no signals cannot be defended to a customer"
+    assert result.signals, "verdict with no signals can't be defended to a customer"
     assert all(s.weight > 0 for s in result.signals)
     assert result.to_dict()["signals"][0]["name"]

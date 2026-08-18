@@ -1,8 +1,7 @@
-"""False-positive regression tests.
+"""False positives.
 
-Every case here is a *legitimate* client that an over-eager rule would flag. In
-production these are the tickets that make a customer ask for the whole bot
-policy to be switched back to alert-only, so they are pinned as tests.
+Legitimate clients that a greedy rule would flag. These are the tickets that
+get a bot policy rolled back to alert-only, so they're pinned here.
 """
 
 from __future__ import annotations
@@ -34,11 +33,8 @@ def fp(headers, rdns=None):
 
 
 def test_shared_ip_credential_run_does_not_taint_unrelated_requests():
-    """The NAT problem.
-
-    One user behind a corporate egress IP brute-forces the login. Everyone else
-    behind that same IP must keep browsing without being labelled an attacker.
-    """
+    """NAT problem: one user brute-forces from a shared egress IP, everyone
+    else behind it keeps browsing without being called an attacker."""
     result = classify(
         method="GET",
         path="/api/v1/products",
@@ -52,7 +48,7 @@ def test_shared_ip_credential_run_does_not_taint_unrelated_requests():
 
 
 def test_login_attempt_from_the_same_ip_is_still_caught():
-    """The gate must not disarm the detection it protects."""
+    # the gate above must not disarm the detection it protects
     result = classify(
         method="POST",
         path="/login",
@@ -77,9 +73,7 @@ def test_legitimate_user_signing_in_is_not_an_attack():
 
 
 def test_uptime_monitor_is_automation_not_an_attack():
-    """A synthetic monitor is a bot, but it is not hostile — the distinction
-    between 'automated' and 'malicious' is the whole point of the two-axis
-    model."""
+    # a monitor is a bot but not hostile. that split is the point of two axes
     result = classify(
         method="GET",
         path="/status",
