@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Edge Deception Lab — Traffic Analysis</title>
+<style>
+  :root {
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* Light mode (default scope) */
+  .viz-root {
+    color-scheme: light;
+    --page:            #f9f9f7;
+    --surface-1:       #fcfcfb;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --gridline:        #e1e0d9;
+    --baseline:        #c3c2b7;
+    --border:          rgba(11, 11, 11, 0.10);
+    --series-automated:  #eb6834;
+    --series-legitimate: #2a78d6;
+    --status-critical: #d03b3b;
+    --status-good:     #0ca30c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page:            #0d0d0d;
+      --surface-1:       #1a1a19;
+      --text-primary:    #ffffff;
+      --text-secondary:  #c3c2b7;
+      --text-muted:      #898781;
+      --gridline:        #2c2c2a;
+      --baseline:        #383835;
+      --border:          rgba(255, 255, 255, 0.10);
+      --series-automated:  #d95926;
+      --series-legitimate: #3987e5;
+      --status-critical: #d03b3b;
+      --status-good:     #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --page:            #0d0d0d;
+    --surface-1:       #1a1a19;
+    --text-primary:    #ffffff;
+    --text-secondary:  #c3c2b7;
+    --text-muted:      #898781;
+    --gridline:        #2c2c2a;
+    --baseline:        #383835;
+    --border:          rgba(255, 255, 255, 0.10);
+    --series-automated:  #d95926;
+    --series-legitimate: #3987e5;
+    --status-critical: #d03b3b;
+    --status-good:     #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font); }
+  .viz-root {
+    background: var(--page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    padding: 32px clamp(16px, 4vw, 48px) 64px;
+  }
+
+  header.page { display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline;
+                justify-content: space-between; margin-bottom: 8px; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  .subtitle { color: var(--text-secondary); font-size: 13px; margin: 4px 0 24px; }
+
+  /* --- controls: one row above the charts --------------------------- */
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-1);
+    color: var(--text-secondary); cursor: pointer;
+  }
+  button:hover { color: var(--text-primary); }
+  button[aria-pressed="true"] { color: var(--text-primary); font-weight: 600;
+                                border-color: var(--text-muted); }
+
+  /* --- stat tiles ---------------------------------------------------- */
+  .tiles { display: grid; gap: 12px; margin: 20px 0 28px;
+           grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .tile { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: 12px; padding: 16px 18px; }
+  .tile .label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .tile .value { font-size: 30px; font-weight: 600; line-height: 1.1; }
+  .tile .note  { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+  /* --- cards --------------------------------------------------------- */
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .card { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: 12px; padding: 18px 20px 20px; }
+  .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+  .card .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 16px; }
+  .card.wide { grid-column: 1 / -1; }
+
+  /* --- legend -------------------------------------------------------- */
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-secondary);
+            margin-bottom: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* --- horizontal bars ------------------------------------------------ */
+  .bars { display: flex; flex-direction: column; gap: 10px; }
+  .bar-row { display: grid; grid-template-columns: minmax(120px, 34%) 1fr auto;
+             gap: 12px; align-items: center; font-size: 12.5px; }
+  .bar-label { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; }
+  .bar-track { height: 14px; background: transparent; position: relative; }
+  .bar-fill  { height: 14px; border-radius: 0 4px 4px 0; display: block;
+               transition: opacity .12s ease; }
+  .bar-row:hover .bar-fill { opacity: .82; }
+  .bar-value { color: var(--text-primary); font-variant-numeric: tabular-nums;
+               font-size: 12.5px; min-width: 3ch; text-align: right; }
+
+  /* --- line chart ----------------------------------------------------- */
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .axis-label { font-size: 10.5px; fill: var(--text-muted); }
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 20; opacity: 0;
+    background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; min-width: 150px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.28); transition: opacity .1s ease;
+  }
+  .tooltip .t-title { color: var(--text-secondary); margin-bottom: 6px; font-size: 11.5px; }
+  .tooltip .t-row { display: flex; justify-content: space-between; gap: 14px; }
+  .tooltip .t-row b { font-variant-numeric: tabular-nums; }
+
+  /* --- tables --------------------------------------------------------- */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-weight: 600; color: var(--text-secondary);
+       padding: 8px 10px; border-bottom: 1px solid var(--baseline); font-size: 11.5px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--gridline);
+       color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
+  .scroll { max-height: 380px; overflow: auto; }
+
+  .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px;
+         color: var(--text-secondary); white-space: nowrap; }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+
+  <header class="page">
+    <div>
+      <h1>Edge Deception Lab</h1>
+      <p class="subtitle" id="subtitle">Behavioural classification of traffic reaching the decoy surface.</p>
+    </div>
+    <div class="controls">
+      <button data-hours="1"  aria-pressed="false">1h</button>
+      <button data-hours="24" aria-pressed="true">24h</button>
+      <button data-hours="168" aria-pressed="false">7d</button>
+      <button id="theme-toggle" title="Toggle light / dark">Light</button>
+    </div>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid">
+    <div class="card wide">
+      <h2>Traffic over time</h2>
+      <p class="hint">Bucket size adapts to the selected window. Automated traffic is everything not classified as a human visitor or a reverse-DNS verified crawler.</p>
+      <div class="legend">
+        <span><i class="swatch" style="background: var(--series-automated)"></i> Automated</span>
+        <span><i class="swatch" style="background: var(--series-legitimate)"></i> Human / verified crawler</span>
+      </div>
+      <div id="timeline"></div>
+    </div>
+
+    <div class="card">
+      <h2>Verdict breakdown</h2>
+      <p class="hint">Average confidence shown beside each count.</p>
+      <div class="bars" id="verdicts"></div>
+    </div>
+
+    <div class="card">
+      <h2>Most targeted paths</h2>
+      <p class="hint">Distinct sources per path in the tooltip.</p>
+      <div class="bars" id="paths"></div>
+    </div>
+
+    <div class="card">
+      <h2>Client stacks</h2>
+      <p class="hint">Self-identified tooling, falling back to User-Agent family.</p>
+      <div class="bars" id="clients"></div>
+    </div>
+
+    <div class="card">
+      <h2>Top sources</h2>
+      <p class="hint">Ranked by request volume in the window.</p>
+      <div class="scroll"><table id="sources"></table></div>
+    </div>
+
+    <div class="card wide">
+      <h2>Recent events</h2>
+      <p class="hint">Newest first, with the signals that produced each verdict.</p>
+      <div class="scroll"><table id="events"></table></div>
+    </div>
+  </section>
+
+  <!-- Inside .viz-root: the tooltip reads the same surface/ink custom properties
+       as the charts, so it stays legible in both themes. -->
+  <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const VERDICT_LABELS = {
+    verified_crawler: "Verified crawler",
+    vuln_scanner: "Vulnerability scanner",
+    credential_attack: "Credential attack",
+    content_scraper: "Content scraper",
+    recon_probe: "Recon probe",
+    unclassified_automation: "Unclassified automation",
+    likely_human: "Likely human",
+  };
+  const LEGITIMATE = new Set(["likely_human", "verified_crawler"]);
+
+  const tooltip = document.getElementById("tooltip");
+  let hours = 24;
+
+  const fmt = (n) => new Intl.NumberFormat("en-US").format(n);
+  const pct = (n) => `${(n * 100).toFixed(1)}%`;
+  const cssVar = (name) =>
+    getComputedStyle(document.querySelector(".viz-root")).getPropertyValue(name).trim();
+
+  function showTooltip(evt, html) {
+    tooltip.innerHTML = html;
+    tooltip.style.opacity = "1";
+    const pad = 14;
+    const rect = tooltip.getBoundingClientRect();
+    let x = evt.clientX + pad;
+    let y = evt.clientY + pad;
+    if (x + rect.width > window.innerWidth) x = evt.clientX - rect.width - pad;
+    if (y + rect.height > window.innerHeight) y = evt.clientY - rect.height - pad;
+    tooltip.style.left = `${x}px`;
+    tooltip.style.top = `${y}px`;
+  }
+  const hideTooltip = () => { tooltip.style.opacity = "0"; };
+
+  // ---------------------------------------------------------------- tiles
+  function renderTiles(s) {
+    const automated = s.automated_share;
+    document.getElementById("tiles").innerHTML = `
+      <div class="tile">
+        <div class="label">Requests captured</div>
+        <div class="value">${fmt(s.events)}</div>
+        <div class="note">last ${s.window_hours}h</div>
+      </div>
+      <div class="tile">
+        <div class="label">Automated share</div>
+        <div class="value">${pct(automated)}</div>
+        <div class="note">excludes verified crawlers</div>
+      </div>
+      <div class="tile">
+        <div class="label">Unique sources</div>
+        <div class="value">${fmt(s.unique_sources)}</div>
+        <div class="note">${fmt(s.unique_client_stacks)} distinct client stacks</div>
+      </div>
+      <div class="tile">
+        <div class="label">Credential attempts</div>
+        <div class="value">${fmt(s.credential_attempts)}</div>
+        <div class="note">passwords stored only as salted digests</div>
+      </div>`;
+  }
+
+  // --------------------------------------------------------- bar charts
+  function renderBars(target, rows) {
+    const el = document.getElementById(target);
+    if (!rows.length) { el.innerHTML = `<p class="empty">No traffic in this window.</p>`; return; }
+    const max = Math.max(...rows.map((r) => r.value)) || 1;
+    el.innerHTML = rows
+      .map(
+        (r) => `
+        <div class="bar-row" data-tip="${encodeURIComponent(r.tip || "")}">
+          <span class="bar-label" title="${r.label}">${r.label}</span>
+          <span class="bar-track">
+            <span class="bar-fill" style="width:${Math.max((r.value / max) * 100, 1.5)}%;
+                  background:${r.color || "var(--series-legitimate)"}"></span>
+          </span>
+          <span class="bar-value">${fmt(r.value)}</span>
+        </div>`
+      )
+      .join("");
+
+    el.querySelectorAll(".bar-row").forEach((row) => {
+      const tip = decodeURIComponent(row.dataset.tip || "");
+      if (!tip) return;
+      row.addEventListener("mousemove", (e) => showTooltip(e, tip));
+      row.addEventListener("mouseleave", hideTooltip);
+    });
+  }
+
+  // -------------------------------------------------------- line chart
+  function renderTimeline(points) {
+    const host = document.getElementById("timeline");
+    if (points.length < 2) {
+      host.innerHTML = `<p class="empty">Not enough buckets to plot yet — generate some traffic.</p>`;
+      return;
+    }
+
+    const W = 900, H = 240, M = { top: 12, right: 12, bottom: 26, left: 40 };
+    const iw = W - M.left - M.right, ih = H - M.top - M.bottom;
+    const maxY = Math.max(1, ...points.map((p) => Math.max(p.automated, p.legitimate)));
+    const x = (i) => M.left + (i / (points.length - 1)) * iw;
+    const y = (v) => M.top + ih - (v / maxY) * ih;
+
+    const line = (key) => points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
+    const ticks = 4;
+    const gridlines = Array.from({ length: ticks + 1 }, (_, i) => {
+      const v = (maxY / ticks) * i;
+      return `<line x1="${M.left}" x2="${W - M.right}" y1="${y(v)}" y2="${y(v)}"
+                    stroke="var(--gridline)" stroke-width="1" />
+              <text class="axis-label" x="${M.left - 8}" y="${y(v) + 3.5}" text-anchor="end">${Math.round(v)}</text>`;
+    }).join("");
+
+    const step = Math.max(1, Math.ceil(points.length / 6));
+    const xLabels = points
+      .map((p, i) =>
+        i % step === 0
+          ? `<text class="axis-label" x="${x(i)}" y="${H - 6}" text-anchor="middle">${p.label ?? p.bucket.slice(11, 16)}</text>`
+          : ""
+      )
+      .join("");
+
+    host.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Automated versus legitimate requests per hour">
+        ${gridlines}
+        <line x1="${M.left}" x2="${W - M.right}" y1="${M.top + ih}" y2="${M.top + ih}"
+              stroke="var(--baseline)" stroke-width="1" />
+        ${xLabels}
+        <path d="${line("legitimate")}" fill="none" stroke="var(--series-legitimate)"
+              stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <path d="${line("automated")}" fill="none" stroke="var(--series-automated)"
+              stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <line id="crosshair" y1="${M.top}" y2="${M.top + ih}" stroke="var(--text-muted)"
+              stroke-width="1" stroke-dasharray="3 3" opacity="0" />
+        <circle id="dot-a" r="4.5" fill="var(--series-automated)" stroke="var(--surface-1)"
+                stroke-width="2" opacity="0" />
+        <circle id="dot-l" r="4.5" fill="var(--series-legitimate)" stroke="var(--surface-1)"
+                stroke-width="2" opacity="0" />
+        <rect id="hit" x="${M.left}" y="${M.top}" width="${iw}" height="${ih}" fill="transparent" />
+      </svg>`;
+
+    const svg = host.querySelector("svg");
+    const hit = host.querySelector("#hit");
+    const cross = host.querySelector("#crosshair");
+    const dotA = host.querySelector("#dot-a");
+    const dotL = host.querySelector("#dot-l");
+
+    hit.addEventListener("mousemove", (e) => {
+      const box = svg.getBoundingClientRect();
+      const relative = ((e.clientX - box.left) / box.width) * W;
+      const i = Math.min(points.length - 1, Math.max(0, Math.round(((relative - M.left) / iw) * (points.length - 1))));
+      const p = points[i];
+      [cross, dotA, dotL].forEach((n) => (n.style.opacity = "1"));
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+      dotA.setAttribute("cx", x(i)); dotA.setAttribute("cy", y(p.automated));
+      dotL.setAttribute("cx", x(i)); dotL.setAttribute("cy", y(p.legitimate));
+      showTooltip(
+        e,
+        `<div class="t-title">${p.bucket.replace("T", " ")}</div>
+         <div class="t-row"><span><i class="swatch" style="background:var(--series-automated)"></i> Automated</span><b>${fmt(p.automated)}</b></div>
+         <div class="t-row"><span><i class="swatch" style="background:var(--series-legitimate)"></i> Legitimate</span><b>${fmt(p.legitimate)}</b></div>`
+      );
+    });
+    hit.addEventListener("mouseleave", () => {
+      [cross, dotA, dotL].forEach((n) => (n.style.opacity = "0"));
+      hideTooltip();
+    });
+  }
+
+  // ------------------------------------------------------------ tables
+  function renderSources(rows) {
+    const el = document.getElementById("sources");
+    if (!rows.length) { el.innerHTML = `<tbody><tr><td class="empty">No sources yet.</td></tr></tbody>`; return; }
+    el.innerHTML = `
+      <thead><tr><th>Source</th><th>Requests</th><th>Paths</th><th>Verdict</th></tr></thead>
+      <tbody>${rows.map((r) => `
+        <tr>
+          <td class="mono">${r.source ?? "—"}</td>
+          <td>${fmt(r.requests)}</td>
+          <td>${fmt(r.distinct_paths)}</td>
+          <td><span class="tag"><i class="swatch" style="background:${
+            LEGITIMATE.has(r.verdict) ? "var(--series-legitimate)" : "var(--series-automated)"
+          }"></i>${VERDICT_LABELS[r.verdict] || r.verdict}</span></td>
+        </tr>`).join("")}</tbody>`;
+  }
+
+  function renderEvents(rows) {
+    const el = document.getElementById("events");
+    if (!rows.length) { el.innerHTML = `<tbody><tr><td class="empty">Nothing captured yet.</td></tr></tbody>`; return; }
+    el.innerHTML = `
+      <thead><tr><th>Time (UTC)</th><th>Source</th><th>Request</th><th>Status</th><th>Verdict</th><th>Signals</th></tr></thead>
+      <tbody>${rows.map((r) => `
+        <tr>
+          <td class="mono">${(r.ts || "").slice(11, 19)}</td>
+          <td class="mono">${r.source ?? "—"}</td>
+          <td class="mono">${r.method} ${escapeHtml(r.path).slice(0, 60)}</td>
+          <td>${r.status}</td>
+          <td><span class="tag"><i class="swatch" style="background:${
+            LEGITIMATE.has(r.verdict) ? "var(--series-legitimate)" : "var(--series-automated)"
+          }"></i>${VERDICT_LABELS[r.verdict] || r.verdict} · ${r.confidence}</span></td>
+          <td style="color:var(--text-secondary)">${r.signals.slice(0, 3).join(", ") || "—"}</td>
+        </tr>`).join("")}</tbody>`;
+  }
+
+  const escapeHtml = (s) =>
+    String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // -------------------------------------------------------------- load
+  async function load() {
+    const [summary, events] = await Promise.all([
+      fetch(`/_edl/api/summary?hours=${hours}`).then((r) => r.json()),
+      fetch(`/_edl/api/events?limit=60`).then((r) => r.json()),
+    ]);
+
+    renderTiles(summary.summary);
+    renderTimeline(summary.timeline);
+
+    renderBars(
+      "verdicts",
+      summary.verdicts.map((v) => ({
+        label: VERDICT_LABELS[v.verdict] || v.verdict,
+        value: v.count,
+        color: LEGITIMATE.has(v.verdict) ? "var(--series-legitimate)" : "var(--series-automated)",
+        tip: `<div class="t-title">${VERDICT_LABELS[v.verdict] || v.verdict}</div>
+              <div class="t-row"><span>Requests</span><b>${fmt(v.count)}</b></div>
+              <div class="t-row"><span>Avg. confidence</span><b>${v.avg_confidence}</b></div>`,
+      }))
+    );
+
+    renderBars(
+      "paths",
+      summary.top_paths.map((p) => ({
+        label: p.path,
+        value: p.count,
+        tip: `<div class="t-title">${escapeHtml(p.path)}</div>
+              <div class="t-row"><span>Requests</span><b>${fmt(p.count)}</b></div>
+              <div class="t-row"><span>Distinct sources</span><b>${fmt(p.sources)}</b></div>`,
+      }))
+    );
+
+    renderBars(
+      "clients",
+      summary.top_clients.map((c) => ({
+        label: c.client,
+        value: c.count,
+        tip: `<div class="t-title">${escapeHtml(c.client)}</div>
+              <div class="t-row"><span>Requests</span><b>${fmt(c.count)}</b></div>`,
+      }))
+    );
+
+    renderSources(summary.top_sources);
+    renderEvents(events.events);
+    document.getElementById("subtitle").textContent =
+      `Behavioural classification of traffic reaching the decoy surface · window: last ${hours}h · refreshed every 15s`;
+  }
+
+  document.querySelectorAll("[data-hours]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      hours = Number(btn.dataset.hours);
+      document.querySelectorAll("[data-hours]").forEach((b) =>
+        b.setAttribute("aria-pressed", String(b === btn))
+      );
+      load();
+    });
+  });
+
+  const toggle = document.getElementById("theme-toggle");
+  toggle.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    toggle.textContent = next === "dark" ? "Light" : "Dark";
+  });
+
+  load();
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>
