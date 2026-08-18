@@ -62,42 +62,65 @@ INERT_PROBES = [
 USERNAMES = ["admin", "root", "test", "gabriel", "support", "administrator",
              "user1", "info", "sa", "operator"]
 
+# Synthetic source addresses, one pool per profile, drawn from RFC 5737
+# documentation ranges so nothing here can collide with a real network.
+#
+#   198.51.100.0/24 — hostile profiles
+#   203.0.113.0/24  — legitimate profiles
+#
+# These are injected as X-Edge-Client-IP, the header the sensor trusts. That is
+# safe precisely because it is only meaningful when the sensor is reached
+# directly: nginx overwrites the header unconditionally, so the same trick sent
+# through the edge is discarded before the sensor ever sees it. Without this the
+# lab can only ever observe one source, and every velocity aggregate collapses
+# into a single profile.
+SOURCE_POOLS = {
+    "human": ["203.0.113.14", "203.0.113.27", "203.0.113.55", "203.0.113.91"],
+    "verified_crawler": ["203.0.113.100"],
+    "scanner": ["198.51.100.7", "198.51.100.23", "198.51.100.64"],
+    "exploit_probe": ["198.51.100.41", "198.51.100.88"],
+    "credential_attack": ["198.51.100.12", "198.51.100.150"],
+    "scraper": ["198.51.100.201", "198.51.100.202"],
+}
 
-def profile_human(client: httpx.Client, base: str) -> None:
+
+def profile_human(client: httpx.Client, base: str, extra: dict) -> None:
     for path in random.sample(BROWSER_PATHS, k=random.randint(2, 4)):
-        client.get(base + path, headers=BROWSER_HEADERS)
+        client.get(base + path, headers={**BROWSER_HEADERS, **extra})
         time.sleep(random.uniform(0.2, 0.8))
 
 
-def profile_verified_crawler(client: httpx.Client, base: str) -> None:
+def profile_verified_crawler(client: httpx.Client, base: str, extra: dict) -> None:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
         "Accept": "*/*",
         "Accept-Encoding": "gzip",
         "From": "googlebot(at)googlebot.com",
+        **extra,
     }
     for path in ("/", "/robots.txt", "/api/v1/products"):
         client.get(base + path, headers=headers)
 
 
-def profile_scanner(client: httpx.Client, base: str) -> None:
+def profile_scanner(client: httpx.Client, base: str, extra: dict) -> None:
     headers = {"User-Agent": random.choice(["nikto/2.5.0", "gobuster/3.6", "curl/8.4.0"]),
-               "Accept": "*/*"}
+               "Accept": "*/*", **extra}
     for path in random.sample(SCANNER_PATHS, k=random.randint(8, len(SCANNER_PATHS))):
         client.get(base + path, headers=headers)
 
 
-def profile_exploit_probe(client: httpx.Client, base: str) -> None:
-    headers = {"User-Agent": "sqlmap/1.8#stable", "Accept": "*/*"}
+def profile_exploit_probe(client: httpx.Client, base: str, extra: dict) -> None:
+    headers = {"User-Agent": "sqlmap/1.8#stable", "Accept": "*/*", **extra}
     for path in INERT_PROBES:
         client.get(base + path, headers=headers)
 
 
-def profile_credential_attack(client: httpx.Client, base: str) -> None:
+def profile_credential_attack(client: httpx.Client, base: str, extra: dict) -> None:
     headers = {
         "User-Agent": "python-requests/2.32.0",
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "*/*",
+        **extra,
     }
     for username in random.sample(USERNAMES, k=random.randint(6, len(USERNAMES))):
         client.post(
@@ -107,10 +130,11 @@ def profile_credential_attack(client: httpx.Client, base: str) -> None:
         )
 
 
-def profile_scraper(client: httpx.Client, base: str) -> None:
+def profile_scraper(client: httpx.Client, base: str, extra: dict) -> None:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
         "Accept": "*/*",
+        **extra,
     }
     for page in range(1, random.randint(12, 25)):
         client.get(f"{base}/api/v1/products?page={page}", headers=headers)
@@ -133,6 +157,14 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, default=12, help="Number of client sessions")
     parser.add_argument("--allow-remote", action="store_true",
                         help="Required to target a non-loopback host you operate")
+    parser.add_argument(
+        "--simulate-edge", action="store_true",
+        help="Inject synthetic source addresses (RFC 5737 ranges) as the trusted "
+             "edge header. Only meaningful when hitting the sensor directly — "
+             "nginx overwrites the header, so this cannot forge a source through "
+             "the edge. Without it every profile shares one address and the "
+             "velocity aggregates collapse into a single client.",
+    )
     args = parser.parse_args()
 
     host = urlparse(args.target).hostname or ""
@@ -148,9 +180,15 @@ def main() -> int:
         for i in range(args.rounds):
             name = random.choice(weighted)
             fn, _ = PROFILES[name]
-            print(f"[{i + 1}/{args.rounds}] profile={name}")
+
+            extra: dict[str, str] = {}
+            if args.simulate_edge:
+                extra["X-Edge-Client-IP"] = random.choice(SOURCE_POOLS[name])
+
+            source = extra.get("X-Edge-Client-IP", "local")
+            print(f"[{i + 1}/{args.rounds}] profile={name} source={source}")
             try:
-                fn(client, args.target.rstrip("/"))
+                fn(client, args.target.rstrip("/"), extra)
             except httpx.HTTPError as exc:
                 print(f"  ! {exc}")
             time.sleep(random.uniform(0.1, 0.4))

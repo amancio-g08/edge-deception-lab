@@ -133,19 +133,31 @@ cp .env.example .env          # set EDL_CREDENTIAL_SALT to something unique
 docker compose up --build -d
 
 # generate synthetic traffic so there is something to look at
-python tools/simulate_traffic.py --rounds 20
+python tools/simulate_traffic.py --rounds 20 --simulate-edge
 
 # dashboard (bound to loopback by design)
 open http://127.0.0.1:8081/_edl/dashboard
 ```
 
-Local development without Docker:
+`--simulate-edge` assigns each client profile a synthetic source address from
+the RFC 5737 documentation ranges. Without it every profile shares one address
+and the velocity aggregates collapse into a single client — which is also a
+useful demonstration of the shared-IP problem the classifier has to survive.
+
+### Without Docker
+
+Everything except the nginx edge layer runs on Python alone:
 
 ```bash
 pip install -r honeypot/requirements.txt
-EDL_DB_PATH=./data/events.db uvicorn honeypot.app.main:app --port 8080
+EDL_DB_PATH=./data/events.db python -m uvicorn honeypot.app.main:app --port 8080
+python tools/simulate_traffic.py --target http://127.0.0.1:8080 --rounds 20 --simulate-edge
 pytest -q
 ```
+
+Then open `http://127.0.0.1:8080/_edl/dashboard`. Running the sensor directly
+means no edge tier in front of it, so `X-Edge-Client-IP` is not overwritten —
+fine for local work, never for anything exposed.
 
 ### Configuration
 
