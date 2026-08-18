@@ -1,0 +1,40 @@
+services:
+  honeypot:
+    build:
+      context: .
+      dockerfile: honeypot/Dockerfile
+    container_name: edl-sensor
+    restart: unless-stopped
+    environment:
+      EDL_DB_PATH: /data/events.db
+      EDL_CREDENTIAL_SALT: ${EDL_CREDENTIAL_SALT:-change-me-before-exposing}
+      EDL_VERIFY_BOT_RDNS: ${EDL_VERIFY_BOT_RDNS:-true}
+      EDL_VELOCITY_WINDOW: ${EDL_VELOCITY_WINDOW:-300}
+      EDL_STORE_IP_RAW: ${EDL_STORE_IP_RAW:-true}
+    volumes:
+      - sensor-data:/data
+    # Bound to loopback: the sensor is reached through the edge, and the
+    # management surface is reached through the SSH tunnel documented in the
+    # README. Never publish this on 0.0.0.0.
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks: [edl]
+
+  edge:
+    image: nginx:1.27-alpine
+    container_name: edl-edge
+    restart: unless-stopped
+    depends_on:
+      - honeypot
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${EDL_PUBLIC_BIND:-127.0.0.1}:8080:8080"
+    networks: [edl]
+
+volumes:
+  sensor-data:
+
+networks:
+  edl:
+    driver: bridge
