@@ -157,7 +157,9 @@ async def capture(request: Request, full_path: str) -> Response:
     decoy = decoys.resolve(method, path)
 
     src_ip_hash = redact.digest(src_ip, settings.credential_salt)
-    velocity_raw = store.velocity_for(src_ip_hash, settings.velocity_window_seconds)
+    velocity_raw = store.velocity_for(
+        src_ip_hash, settings.velocity_window_seconds, fingerprint.client_id
+    )
     velocity = VelocityContext(**velocity_raw)
 
     classification = classify(
@@ -206,6 +208,7 @@ async def capture(request: Request, full_path: str) -> Response:
             "ja4": fingerprint.ja4 or None,
             "ja4_raw": fingerprint.ja4_raw or None,
             "tls_family": fingerprint.tls_family,
+            "client_id": fingerprint.client_id or None,
         }
     )
 

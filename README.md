@@ -9,7 +9,7 @@ Português · [English](README.en.md)
 Honeypot que classifica quem bate nele pelo comportamento, e não pelo que o cliente
 diz ser.
 
-Eu trabalho com Akamai, a console mostra o que a plataforma decidiu. Não mostra por quê,
+Eu trabalho com Akamai, ou seja, a console mostra o que a plataforma decidiu. Não mostra por quê,
 nem onde ela erra. Montei isso pra entender o mecanismo por fora.
 
 O que saiu foi um sensor que serve uma aplicação falsa, captura tudo que chega e emite
@@ -204,16 +204,10 @@ nem em status. Quem percebe que está sendo "adjetivado" muda de comportamento, 
 
 ## O que ainda não funciona bem [Juro que vou trabalhar nesse cara]
 
-Velocity é chaveada por IP, então CGNAT e saída corporativa misturam gente. Descobri
-isso rodando o simulador local, onde todo perfil sai de `127.0.0.1`: um `GET /admin`
-voltou como `credential_attack`, porque a rotação de usuário de outro perfil tinha
-contaminado o agregado. Hoje tem um gate que só conta rotação de usuário em tentativa
-de autenticação de verdade, e um teste travando isso nos dois sentidos. A correção real
-é identidade por fingerprint, que está no roadmap.
-
 A tabela de JA4 conhecidos é pequena e feita na mão, das capturas em `tlsfront/testdata`.
 Fingerprint fora dela não vira sinal nenhum, nem a favor nem contra: desconhecimento não
-é evidência. Aumentar isso é trabalho de coleta, não de código.
+é evidência. E quando o TLS não entra na conta, a identidade de cliente cai só pra ordem
+de header + Accept-Language, que separa menos. Aumentar a tabela é trabalho de coleta.
 
 Os fingerprints fixados nos testes foram calculados por essa implementação a partir de
 ClientHellos reais, e batem com a spec como eu li. Não foram validados contra a
@@ -223,7 +217,7 @@ cruza com o ja4db.
 ## Testes
 
 ```
-41 passed        # python
+48 passed        # python
 ok  tlsfront     # go, 13 testes
 ```
 
@@ -234,6 +228,7 @@ ok  tlsfront     # go, 13 testes
 | `test_redact.py` | Que nenhuma credencial vá pro banco em claro |
 | `test_capture.py` | Captura ponta a ponta, e que a análise siga invisível |
 | `test_tls_signals.py` | Que header forjado não sobreviva ao handshake |
+| `test_identity.py` | Que dois clientes no mesmo IP tenham velocity separada |
 | `tlsfront/ja4_test.go` | Parser de ClientHello, GREASE, e os fingerprints fixados |
 
 ## Roadmap

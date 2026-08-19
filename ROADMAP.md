@@ -9,7 +9,7 @@ Naming: `feat/`, `fix/`, `docs/`, `chore/`.
 
 Superfície-isca inerte, fingerprint de requisição, verificação de crawler por rDNS
 confirmado, classificador de dois eixos com sinais explicáveis, persistência em SQLite,
-dashboard, camada nginx, Docker Compose, fingerprint de TLS e 54 testes.
+dashboard, camada nginx, Docker Compose, fingerprint de TLS, identidade por fingerprint e 61 testes.
 
 Branches: `feat/decoy-surface`, `feat/fingerprinting`, `feat/classifier`,
 `feat/storage`, `feat/sensor`, `feat/edge-layer`, `feat/dashboard`,
@@ -19,20 +19,10 @@ E o `tlsfront`: terminação TLS em Go que lê o ClientHello antes do handshake,
 o JA4 e repassa no header. Com ele, header forjado deixa de funcionar. Branch
 `feat/ja4-fingerprinting`.
 
-## `feat/fingerprint-identity`
-
-Velocity é chaveada por IP, e é daí que veio o falso positivo que está travado em
-`test_false_positives.py`. Um endereço de saída corporativa mistura muita gente num
-perfil só.
-
-Ideia: montar identidade composta de hash de ordem de header + JA4 + Accept-Language +
-plataforma declarada, e chavear os agregados nisso. O IP continua, mas só como dimensão
-de relatório.
-
-O JA4 já está disponível desde o `tlsfront`, então o insumo existe.
-
-Pronto quando: dois clientes sintéticos distintos atrás do mesmo IP produzem contextos
-de velocity independentes.
+E identidade por fingerprint: a velocity deixou de ser chaveada por IP e passou a ser
+chaveada por uma identidade montada da forma da requisição (ordem de header + JA4 +
+Accept-Language + família de UA). Dois clientes atrás do mesmo IP viram dois baldes, e o
+falso positivo de NAT que a fase 1 remendava sumiu de vez. Branch `feat/fingerprint-identity`.
 
 ## `feat/asn-enrichment`
 

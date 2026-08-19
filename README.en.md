@@ -248,7 +248,7 @@ downgrades a legitimate crawler to unverified instead of failing open.
 ## Tests
 
 ```
-41 passed        # python
+48 passed        # python
 ok  tlsfront     # go, 13 tests
 ```
 

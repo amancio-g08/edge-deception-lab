@@ -109,6 +109,8 @@ class Fingerprint:
     ja4: str = ""
     ja4_raw: str = ""
     tls_family: str | None = None
+    accept_language: str = ""
+    client_id: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -195,6 +197,33 @@ def tls_family(ja4: str) -> str | None:
     return JA4_CIPHER_FAMILIES.get(parts[1])
 
 
+def compute_client_id(
+    header_order_hash: str,
+    ja4: str,
+    accept_language: str,
+    ua_family: str,
+) -> str:
+    """A client identity that does not depend on the source address.
+
+    Velocity keyed by IP breaks the moment two people share one: a CGNAT or a
+    corporate egress mixes everyone into one profile. This keys on properties of
+    the client itself instead.
+
+    The parts are chosen to be stable for one client and hard to collide across
+    two:
+      - header order hash: the HTTP stack's signature, survives a spoofed UA
+      - JA4: the TLS stack, forged only by reimplementing the ClientHello
+      - accept-language: the locale the client was built/configured with
+      - ua family: coarse browser/tool bucket
+
+    None of these alone identifies anyone. Together they separate two clients
+    behind one address far better than the address does. This is not a person
+    and is never treated as one: it is a request-shape signature.
+    """
+    material = "|".join([header_order_hash, ja4, accept_language.lower().strip(), ua_family])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
 def build_fingerprint(
     headers: dict[str, str],
     header_order: list[str],
@@ -207,11 +236,15 @@ def build_fingerprint(
     ua = lowered.get("user-agent", "")
 
     declared = detect_declared_crawler(ua)
+    hoh = header_order_hash(header_order)
+    ua_family = classify_ua_family(ua)
+    accept_language = lowered.get("accept-language", "")
+
     fp = Fingerprint(
         ua_raw=ua,
-        ua_family=classify_ua_family(ua),
+        ua_family=ua_family,
         header_count=len(header_order),
-        header_order_hash=header_order_hash(header_order),
+        header_order_hash=hoh,
         missing_baseline_headers=[h for h in BROWSER_BASELINE_HEADERS if h not in lowered],
         has_sec_fetch=any(h in lowered for h in SEC_FETCH_HEADERS),
         has_client_hints=any(h in lowered for h in CLIENT_HINT_HEADERS),
@@ -225,5 +258,7 @@ def build_fingerprint(
         ja4=ja4,
         ja4_raw=ja4_raw,
         tls_family=tls_family(ja4),
+        accept_language=accept_language,
+        client_id=compute_client_id(hoh, ja4, accept_language, ua_family),
     )
     return fp
