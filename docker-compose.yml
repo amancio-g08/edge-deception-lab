@@ -18,6 +18,22 @@ services:
       - "127.0.0.1:8081:8080"
     networks: [edl]
 
+  tlsfront:
+    build:
+      context: .
+      dockerfile: tlsfront/Dockerfile
+    container_name: edl-tlsfront
+    restart: unless-stopped
+    depends_on:
+      - honeypot
+    environment:
+      EDL_TLS_LISTEN: ":8443"
+      EDL_UPSTREAM: "http://honeypot:8080"
+    # HTTPS entra por aqui. o ClientHello e lido antes do handshake consumir ele
+    ports:
+      - "${EDL_PUBLIC_BIND:-127.0.0.1}:8443:8443"
+    networks: [edl]
+
   edge:
     image: nginx:1.27-alpine
     container_name: edl-edge

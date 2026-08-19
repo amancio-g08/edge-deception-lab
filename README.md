@@ -29,6 +29,14 @@ em que ordem, se tem `Sec-Fetch-*`, se tem Client Hints. Navegador é muito prev
 nisso. qlqr curl, requests e a maioria dos scanners não são, e essa diferença sobrevive a um
 User-Agent falsificado.
 
+Só que header é barato de forjar. Quem raspa site a sério copia o conjunto inteiro do
+Chrome e passa liso. Por isso a outra metade vem do **TLS**: o `tlsfront` lê o
+ClientHello antes do handshake consumir ele e calcula o JA4. Aí dá pra comparar o que o
+cliente diz ser com a biblioteca que ele usou de verdade.
+
+Quando as duas discordam, os sinais de header não valem nada. São exatamente o que está
+sendo forjado.
+
 A segunda é o que o cliente quer. Isso só aparece no comportamento de longo prazo...
 
 Quantos paths distintos ele varreu?
@@ -57,6 +65,14 @@ Então são dois scores. Quem decide o veredicto é o de intenção.
 `unclassified_automation` não compete com os outros. Tirar uma regra
 do alerta e botar em bloqueio precisa de evidência.
 
+O caso que resume o projeto: `curl` com o conjunto de headers do Chrome inteiro,
+`Sec-Fetch-*` e Client Hints incluídos. Header não pega. O handshake entrega, e um
+sinal só basta:
+
+```
+GET /api/v1/products   openssl   tls_contradicts_user_agent
+```
+
 ```json
 {
   "verdict": "vuln_scanner",
@@ -76,7 +92,14 @@ do alerta e botar em bloqueio precisa de evidência.
 
 ```
                     ┌──────────────────────────────────────────┐
-   internet ───────▶│  edge (nginx)                            │
+   https ──────────▶│  tlsfront (Go)                           │
+                    │  · lê o ClientHello antes do handshake   │
+                    │  · calcula o JA4                         │
+                    │  · repassa em X-Edge-JA4                 │
+                    └───────────────────┬──────────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────────┐
+   http ───────────▶│  edge (nginx)                            │
                     │  · define X-Edge-Client-IP sem exceção   │
                     │  · aplica rate limit                     │
                     │  · devolve 404 para /_edl/*              │
@@ -116,19 +139,40 @@ python tools/simulate_traffic.py --rounds 20 --simulate-edge
 
 Dashboard em `http://127.0.0.1:8081/_edl/dashboard`.
 
+Pra ver o JA4, entra por HTTPS na 8443. Certificado é autoassinado e gerado no boot,
+então `-k`:
+
+```bash
+curl -sk https://127.0.0.1:8443/ -o /dev/null
+
+# o mesmo curl, agora mentindo que é Chrome
+curl -sk https://127.0.0.1:8443/ -o /dev/null \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+```
+
+Os dois chegam com o mesmo JA4. O segundo ganha `tls_contradicts_user_agent`.
+
 O `--simulate-edge` dá pra cada perfil um IP de origem sintético, das faixas de
 documentação da RFC 5737. Sem ele todo mundo sai do mesmo endereço e os agregados de
 velocity viram um cliente só.
 
 ### Sem Docker
 
-Só o nginx precisa de container. O resto roda com Python:
+Só o nginx precisa de container. O sensor roda com Python e o `tlsfront` compila pra um
+binário sem dependência externa nenhuma:
 
 ```bash
 pip install -r honeypot/requirements.txt
 EDL_DB_PATH=./data/events.db python -m uvicorn honeypot.app.main:app --port 8080
 python tools/simulate_traffic.py --target http://127.0.0.1:8080 --rounds 20 --simulate-edge
 pytest -q
+```
+
+E o JA4 sem Docker:
+
+```bash
+cd tlsfront && go build -o ../tlsfront-bin . && cd ..
+./tlsfront-bin -listen 127.0.0.1:8443 -upstream http://127.0.0.1:8080
 ```
 
 Dashboard em `http://127.0.0.1:8080/_edl/dashboard`. Rodando assim não tem edge na
@@ -167,14 +211,20 @@ contaminado o agregado. Hoje tem um gate que só conta rotação de usuário em 
 de autenticação de verdade, e um teste travando isso nos dois sentidos. A correção real
 é identidade por fingerprint, que está no roadmap.
 
-Não tem fingerprint de TLS. JA4 fica abaixo do proxy reverso e é o sinal de automação
-mais forte que existe. Enquanto não tiver, um cliente que reproduza headers de navegador
-direitinho passa como navegador.
+A tabela de JA4 conhecidos é pequena e feita na mão, das capturas em `tlsfront/testdata`.
+Fingerprint fora dela não vira sinal nenhum, nem a favor nem contra: desconhecimento não
+é evidência. Aumentar isso é trabalho de coleta, não de código.
+
+Os fingerprints fixados nos testes foram calculados por essa implementação a partir de
+ClientHellos reais, e batem com a spec como eu li. Não foram validados contra a
+ferramenta de referência do FoxIO. Antes de tratar qualquer valor daqui como canônico,
+cruza com o ja4db.
 
 ## Testes
 
 ```
-33 passed
+41 passed        # python
+ok  tlsfront     # go, 13 testes
 ```
 
 | Arquivo | O que protege |
@@ -183,6 +233,8 @@ direitinho passa como navegador.
 | `test_false_positives.py` | Cliente legítimo que regra gulosa marcaria |
 | `test_redact.py` | Que nenhuma credencial vá pro banco em claro |
 | `test_capture.py` | Captura ponta a ponta, e que a análise siga invisível |
+| `test_tls_signals.py` | Que header forjado não sobreviva ao handshake |
+| `tlsfront/ja4_test.go` | Parser de ClientHello, GREASE, e os fingerprints fixados |
 
 ## Roadmap
 

@@ -36,6 +36,12 @@ class Settings:
     trusted_edge_header: str = field(
         default_factory=lambda: os.getenv("EDL_EDGE_IP_HEADER", "X-Edge-Client-IP")
     )
+    # set by tlsfront, which reads the ClientHello before the handshake consumes
+    # it. only meaningful over HTTPS; plain HTTP has no TLS to fingerprint
+    ja4_header: str = field(default_factory=lambda: os.getenv("EDL_JA4_HEADER", "X-Edge-JA4"))
+    ja4_raw_header: str = field(
+        default_factory=lambda: os.getenv("EDL_JA4_RAW_HEADER", "X-Edge-JA4-Raw")
+    )
 
     # privacy. passwords are hashed, never stored raw
     credential_salt: str = field(

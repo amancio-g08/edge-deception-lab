@@ -192,6 +192,12 @@
     </div>
 
     <div class="card">
+      <h2>TLS stacks</h2>
+      <p class="hint">From the handshake, not the User-Agent. The gap between the bar and "claims browser" is impersonation.</p>
+      <div class="bars" id="tls"></div>
+    </div>
+
+    <div class="card">
       <h2>Client stacks</h2>
       <p class="hint">Self-identified tooling, falling back to User-Agent family.</p>
       <div class="bars" id="clients"></div>
@@ -400,13 +406,14 @@
     const el = document.getElementById("events");
     if (!rows.length) { el.innerHTML = `<tbody><tr><td class="empty">Nothing captured yet.</td></tr></tbody>`; return; }
     el.innerHTML = `
-      <thead><tr><th>Time (UTC)</th><th>Source</th><th>Request</th><th>Status</th><th>Verdict</th><th>Signals</th></tr></thead>
+      <thead><tr><th>Time (UTC)</th><th>Source</th><th>Request</th><th>Status</th><th>TLS</th><th>Verdict</th><th>Signals</th></tr></thead>
       <tbody>${rows.map((r) => `
         <tr>
           <td class="mono">${(r.ts || "").slice(11, 19)}</td>
           <td class="mono">${r.source ?? "—"}</td>
           <td class="mono">${r.method} ${escapeHtml(r.path).slice(0, 60)}</td>
           <td>${r.status}</td>
+          <td class="mono" title="${escapeHtml(r.ja4 || "")}">${escapeHtml(r.tls_family || "—")}</td>
           <td><span class="tag"><i class="swatch" style="background:${
             LEGITIMATE.has(r.verdict) ? "var(--series-legitimate)" : "var(--series-automated)"
           }"></i>${VERDICT_LABELS[r.verdict] || r.verdict} · ${r.confidence}</span></td>
@@ -446,6 +453,19 @@
         tip: `<div class="t-title">${escapeHtml(p.path)}</div>
               <div class="t-row"><span>Requests</span><b>${fmt(p.count)}</b></div>
               <div class="t-row"><span>Distinct sources</span><b>${fmt(p.sources)}</b></div>`,
+      }))
+    );
+
+    renderBars(
+      "tls",
+      (summary.tls_stacks || []).map((t) => ({
+        label: t.family,
+        value: t.count,
+        color: t.family === "chromium" ? "var(--series-legitimate)" : "var(--series-automated)",
+        tip: `<div class="t-title">${escapeHtml(t.family)}</div>
+              <div class="t-row"><span>Requests</span><b>${fmt(t.count)}</b></div>
+              <div class="t-row"><span>Distinct fingerprints</span><b>${fmt(t.fingerprints)}</b></div>
+              <div class="t-row"><span>Claims browser</span><b>${fmt(t.claims_browser)}</b></div>`,
       }))
     );
 

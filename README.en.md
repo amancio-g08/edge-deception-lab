@@ -30,6 +30,13 @@ headers came, in what order, whether `Sec-Fetch-*` is there, whether Client Hint
 Browsers are very predictable about this. curl, requests and most scanners aren't, and
 that gap survives a spoofed User-Agent.
 
+Headers are cheap to forge, though. Anyone scraping seriously copies Chrome's entire
+set and walks straight through. So the other half of the answer comes from **TLS**:
+`tlsfront` reads the ClientHello before the handshake consumes it and computes the JA4.
+That lets the classifier compare what a client claims to be against the library it
+actually used. When the two disagree, the header signals count for nothing, because
+they are precisely what is being forged.
+
 The second is what the client wants. That only shows up in behaviour over time: how
 many distinct paths it swept, whether it sent exploit-shaped payloads, whether it kept
 rotating usernames at the login.
@@ -52,6 +59,14 @@ So there are two scores. The intent one decides the verdict.
 | `recon_probe` | Touching admin surface, no clear pattern yet | Monitor |
 | `unclassified_automation` | Automated, intent unreadable | Alert only |
 | `likely_human` | Coherent browser fingerprint, low velocity | Allow |
+
+The case that sums up the project: `curl` carrying Chrome's complete header set,
+`Sec-Fetch-*` and Client Hints included. Header-based detection sees nothing wrong. The
+handshake gives it away, and one signal is enough:
+
+```
+GET /api/v1/products   openssl   tls_contradicts_user_agent
+```
 
 `unclassified_automation` doesn't compete with the others. It's a waiting queue. Moving
 a rule out of alert and into block needs evidence, and that's where the evidence piles
@@ -81,7 +96,14 @@ answering a ticket asking why someone's integration got hit.
 
 ```
                     ┌──────────────────────────────────────────┐
-   internet ───────▶│  edge (nginx)                            │
+   https ──────────▶│  tlsfront (Go)                           │
+                    │  · reads the ClientHello pre-handshake   │
+                    │  · computes the JA4                      │
+                    │  · forwards it in X-Edge-JA4             │
+                    └───────────────────┬──────────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────────┐
+   http ───────────▶│  edge (nginx)                            │
                     │  · sets X-Edge-Client-IP, no exceptions  │
                     │  · rate limits                           │
                     │  · returns 404 for /_edl/*               │
@@ -121,19 +143,41 @@ python tools/simulate_traffic.py --rounds 20 --simulate-edge
 
 Dashboard at `http://127.0.0.1:8081/_edl/dashboard`.
 
+For the JA4, come in over HTTPS on 8443. The certificate is self-signed and generated
+at boot, so curl needs `-k`:
+
+```bash
+curl -sk https://127.0.0.1:8443/ -o /dev/null
+
+# same curl, now claiming to be Chrome
+curl -sk https://127.0.0.1:8443/ -o /dev/null \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+```
+
+Both arrive with the same JA4, and the second one picks up
+`tls_contradicts_user_agent`.
+
 `--simulate-edge` gives each profile a synthetic source IP from the RFC 5737
 documentation ranges. Without it everyone comes from the same address and the velocity
 aggregates collapse into a single client.
 
 ### Without Docker
 
-Only nginx needs a container. The rest runs on Python:
+The sensor runs on plain Python, and `tlsfront` builds to a binary with no external
+dependencies at all (Go standard library only):
 
 ```bash
 pip install -r honeypot/requirements.txt
 EDL_DB_PATH=./data/events.db python -m uvicorn honeypot.app.main:app --port 8080
 python tools/simulate_traffic.py --target http://127.0.0.1:8080 --rounds 20 --simulate-edge
 pytest -q
+```
+
+And for the JA4 without Docker:
+
+```bash
+cd tlsfront && go build -o ../tlsfront-bin . && cd ..
+./tlsfront-bin -listen 127.0.0.1:8443 -upstream http://127.0.0.1:8080
 ```
 
 Dashboard at `http://127.0.0.1:8080/_edl/dashboard`. Running it this way means no edge
@@ -185,9 +229,14 @@ profile had polluted the aggregate. There's a gate now that only counts username
 rotation on an actual authentication attempt, plus a test pinning it in both
 directions. The real fix is fingerprint-based identity, which is on the roadmap.
 
-There's no TLS fingerprinting. JA4 lives below the reverse proxy and is the strongest
-automation signal there is. Until it's in, a client that reproduces browser headers
-properly passes as a browser.
+The table of known JA4s is small and hand-built from local captures in
+`tlsfront/testdata`. A fingerprint outside it produces no signal either way: not
+knowing something is not evidence. Growing that table is collection work, not code.
+
+The fingerprints pinned in the tests were computed by this implementation from real
+ClientHellos, and they match the spec as I read it. They have not been validated
+against FoxIO's reference tool. Cross-check against ja4db before treating any value
+here as canonical.
 
 The weights were set by eye. They come from reasoning about how these clients behave,
 validated against synthetic profiles and a false-positive suite. They don't come from a
@@ -199,7 +248,8 @@ downgrades a legitimate crawler to unverified instead of failing open.
 ## Tests
 
 ```
-33 passed
+41 passed        # python
+ok  tlsfront     # go, 13 tests
 ```
 
 | File | What it protects |
@@ -208,6 +258,8 @@ downgrades a legitimate crawler to unverified instead of failing open.
 | `test_false_positives.py` | Legitimate clients a greedy rule would flag |
 | `test_redact.py` | That no credential reaches the database in clear text |
 | `test_capture.py` | End-to-end capture, and that profiling stays invisible |
+| `test_tls_signals.py` | That forged headers don't survive the handshake |
+| `tlsfront/ja4_test.go` | ClientHello parser, GREASE, and the pinned fingerprints |
 
 ## Roadmap
 

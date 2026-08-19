@@ -106,6 +106,9 @@ class Fingerprint:
     accept_is_wildcard: bool = False
     has_referer: bool = False
     connection_close: bool = False
+    ja4: str = ""
+    ja4_raw: str = ""
+    tls_family: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -171,10 +174,33 @@ def classify_ua_family(user_agent: str) -> str:
     return "unknown"
 
 
+# Cipher hash (part b of the JA4) mapped to the stack that produced it. Part b
+# is the stable half: it changes when the TLS library changes its cipher list,
+# not on every browser release. Captured locally, see tlsfront/testdata.
+JA4_CIPHER_FAMILIES = {
+    "e8f1e7e78f70": "openssl",      # curl, openssl s_client, anything on system OpenSSL
+    "85036bcba153": "python-ssl",   # cpython ssl module, which trims the cipher list
+    "8daaf6152771": "chromium",     # chrome, edge, chromium headless
+}
+
+# Stacks that a human sitting at a browser does not produce.
+SCRIPTED_TLS_FAMILIES = {"openssl", "python-ssl"}
+
+
+def tls_family(ja4: str) -> str | None:
+    """Look up the TLS stack from the cipher hash half of a JA4."""
+    parts = (ja4 or "").split("_")
+    if len(parts) != 3:
+        return None
+    return JA4_CIPHER_FAMILIES.get(parts[1])
+
+
 def build_fingerprint(
     headers: dict[str, str],
     header_order: list[str],
     rdns_hostname: str | None = None,
+    ja4: str = "",
+    ja4_raw: str = "",
 ) -> Fingerprint:
     """headers must be lowercase-keyed. header_order keeps what the dict loses."""
     lowered = {k.lower(): v for k, v in headers.items()}
@@ -196,5 +222,8 @@ def build_fingerprint(
         accept_is_wildcard=lowered.get("accept", "").strip() == "*/*",
         has_referer="referer" in lowered,
         connection_close=lowered.get("connection", "").lower() == "close",
+        ja4=ja4,
+        ja4_raw=ja4_raw,
+        tls_family=tls_family(ja4),
     )
     return fp

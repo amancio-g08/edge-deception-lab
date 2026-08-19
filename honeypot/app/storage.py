@@ -40,14 +40,26 @@ CREATE TABLE IF NOT EXISTS events (
     verdict             TEXT    NOT NULL,
     confidence          REAL    NOT NULL,
     signals_json        TEXT    NOT NULL DEFAULT '[]',
-    fingerprint_json    TEXT    NOT NULL DEFAULT '{}'
+    fingerprint_json    TEXT    NOT NULL DEFAULT '{}',
+    ja4                 TEXT,
+    ja4_raw             TEXT,
+    tls_family          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ts       ON events (ts);
 CREATE INDEX IF NOT EXISTS idx_events_ip       ON events (src_ip_hash, ts);
 CREATE INDEX IF NOT EXISTS idx_events_verdict  ON events (verdict);
 CREATE INDEX IF NOT EXISTS idx_events_path     ON events (path);
+CREATE INDEX IF NOT EXISTS idx_events_ja4      ON events (ja4);
 """
+
+# Columns added after the first release. A lab that has been collecting for a
+# week should not have to throw the data away to pick up a new field.
+MIGRATIONS = (
+    ("ja4", "ALTER TABLE events ADD COLUMN ja4 TEXT"),
+    ("ja4_raw", "ALTER TABLE events ADD COLUMN ja4_raw TEXT"),
+    ("tls_family", "ALTER TABLE events ADD COLUMN tls_family TEXT"),
+)
 
 
 def utc_now() -> datetime:
@@ -72,6 +84,13 @@ class EventStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(events)")}
+        for column, statement in MIGRATIONS:
+            if column not in existing:
+                self._conn.execute(statement)
 
     @contextmanager
     def _cursor(self) -> Iterator[sqlite3.Cursor]:
@@ -94,7 +113,7 @@ class EventStore:
             "headers_json", "header_order_hash", "ua_raw", "ua_family",
             "tool_signature", "declared_crawler", "crawler_verified",
             "username_hash", "verdict", "confidence", "signals_json",
-            "fingerprint_json",
+            "fingerprint_json", "ja4", "ja4_raw", "tls_family",
         )
         placeholders = ",".join("?" for _ in columns)
         values = [event.get(col) for col in columns]
@@ -289,12 +308,42 @@ class EventStore:
             for r in rows
         ]
 
+    def top_tls_stacks(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
+        """Client TLS stacks seen, with how many claim to be a browser.
+
+        The gap between the two columns is the interesting part.
+        """
+        since = iso(utc_now() - timedelta(hours=hours))
+        with self._cursor() as cur:
+            rows = cur.execute(
+                """
+                SELECT
+                    COALESCE(tls_family, 'unknown') AS family,
+                    COUNT(*)                        AS n,
+                    COUNT(DISTINCT ja4)             AS fingerprints,
+                    SUM(CASE WHEN ua_raw LIKE 'Mozilla/5.0%' THEN 1 ELSE 0 END) AS claims_browser
+                FROM events
+                WHERE ts >= ? AND ja4 IS NOT NULL AND ja4 != ''
+                GROUP BY family ORDER BY n DESC LIMIT ?
+                """,
+                (since, limit),
+            ).fetchall()
+        return [
+            {
+                "family": r["family"],
+                "count": r["n"],
+                "fingerprints": r["fingerprints"],
+                "claims_browser": r["claims_browser"] or 0,
+            }
+            for r in rows
+        ]
+
     def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._cursor() as cur:
             rows = cur.execute(
                 """
                 SELECT ts, src_ip, method, path, query, status, verdict, confidence,
-                       ua_raw, tool_signature, signals_json
+                       ua_raw, tool_signature, signals_json, ja4, tls_family
                 FROM events ORDER BY id DESC LIMIT ?
                 """,
                 (limit,),
@@ -311,6 +360,8 @@ class EventStore:
                     "verdict": r["verdict"],
                     "confidence": round(r["confidence"], 2),
                     "client": r["tool_signature"] or (r["ua_raw"] or "")[:60],
+                    "ja4": r["ja4"] or "",
+                    "tls_family": r["tls_family"] or "",
                     "signals": [s["name"] for s in json.loads(r["signals_json"])],
                 }
             )

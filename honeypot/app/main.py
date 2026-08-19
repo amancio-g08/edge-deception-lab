@@ -103,6 +103,7 @@ async def api_summary(request: Request, hours: int = 24) -> JSONResponse:
             "top_clients": store.top_tools(hours),
             "timeline": store.timeline(hours),
             "top_sources": store.top_sources(hours),
+            "tls_stacks": store.top_tls_stacks(hours),
         }
     )
 
@@ -147,7 +148,12 @@ async def capture(request: Request, full_path: str) -> Response:
         else None
     )
 
-    fingerprint = build_fingerprint(headers, header_order, rdns)
+    # Set by tlsfront. Absent over plain HTTP, and absent if the sensor is
+    # reached directly, in which case the classifier simply has one fewer axis.
+    ja4 = request.headers.get(settings.ja4_header, "")
+    ja4_raw = request.headers.get(settings.ja4_raw_header, "")
+
+    fingerprint = build_fingerprint(headers, header_order, rdns, ja4, ja4_raw)
     decoy = decoys.resolve(method, path)
 
     src_ip_hash = redact.digest(src_ip, settings.credential_salt)
@@ -197,6 +203,9 @@ async def capture(request: Request, full_path: str) -> Response:
             "confidence": classification.confidence,
             "signals_json": json.dumps([s.to_dict() for s in classification.signals]),
             "fingerprint_json": json.dumps(fingerprint.to_dict()),
+            "ja4": fingerprint.ja4 or None,
+            "ja4_raw": fingerprint.ja4_raw or None,
+            "tls_family": fingerprint.tls_family,
         }
     )
 

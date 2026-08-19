@@ -1,141 +1,175 @@
-# Architecture
+# Arquitetura
 
-## Request lifecycle
+## O caminho de uma requisição
 
 ```
+0. tlsfront (Go, só no caminho HTTPS)
+   ├─ lê o primeiro registro TLS antes do handshake tocar nele
+   ├─ parseia o ClientHello e calcula o JA4
+   ├─ repõe os bytes lidos e deixa o handshake seguir normal
+   └─ encaminha com X-Edge-JA4, apagando o que o cliente mandou nesse nome
+
 1. edge (nginx)
-   ├─ overwrite X-Edge-Client-IP with $remote_addr   ← client-supplied value discarded
+   ├─ sobrescreve X-Edge-Client-IP com $remote_addr
    ├─ limit_req (30 r/s, burst 60)
-   └─ return 404 for /_edl/*                          ← management surface is not public
+   └─ 404 em /_edl/*
 
-2. sensor (FastAPI, catch-all route)
-   ├─ capture     raw body (truncated), headers, header ORDER
-   ├─ enrich      forward-confirmed rDNS (cached, time-bounded)
-   ├─ fingerprint client-stack signals
-   ├─ decoy       static response lookup (pure, no I/O)
-   ├─ velocity    sliding-window aggregates for this source
-   ├─ classify    weighted scoring → verdict + signals
-   ├─ redact      credentials → salted digest
-   └─ persist     SQLite (WAL)
+2. sensor (FastAPI, rota catch-all)
+   ├─ captura    corpo (truncado), headers, e a ORDEM dos headers
+   ├─ enriquece  rDNS confirmado, com cache e timeout
+   ├─ fingerprint  sinais de client stack
+   ├─ isca       lookup estático da resposta
+   ├─ velocity   agregados da janela deslizante pra essa origem
+   ├─ classifica scoring ponderado, veredicto e sinais
+   ├─ redige     credencial vira digest salgado
+   └─ grava      SQLite em WAL
 
-3. response
-   └─ static decoy body, Server: nginx, no verdict leaked
+3. resposta
+   └─ corpo estático, Server: nginx, nada do veredicto vazando
 ```
 
-Classification happens **before** the response is sent but never influences it.
-That ordering is deliberate: a client that can infer its own classification —
-from a header, a status code, or a measurable timing difference — will adapt, and
-the sensor stops measuring anything real.
+A classificação acontece antes da resposta sair, mas não influencia ela em nada. Isso é
+de propósito. Se o cliente conseguir inferir a própria classificação por header, status
+ou diferença de tempo, ele adapta o comportamento, e aí o sensor não mede mais nada
+real.
 
-## Why these components
+## Por que cada peça está aí
 
-**nginx as the edge layer.** Not decoration. It establishes the one property the
-whole capture depends on: the source address the sensor trusts is set by
-infrastructure the client cannot influence. `proxy_set_header X-Edge-Client-IP
-$remote_addr` overwrites whatever arrived under that name. A honeypot that trusts
-`X-Forwarded-For` from the wire has attacker-controlled source data in its
-dataset, which invalidates every velocity aggregate built on it.
+**nginx.** É ele que garante a única propriedade da qual toda a captura depende: o
+endereço de origem que o sensor confia foi escrito por infraestrutura que o cliente não
+controla. O `proxy_set_header X-Edge-Client-IP $remote_addr` sobrescreve o que tiver
+chegado com esse nome. Honeypot que acredita no `X-Forwarded-For` do fio tem dado
+controlado por atacante dentro dos próprios agregados de velocity, e aí nenhum número
+vale nada.
 
-**SQLite with WAL.** The lab has to be clonable and runnable with one command.
-WAL keeps dashboard reads from blocking capture writes, and the whole dataset is
-one file that can be copied off the host for offline analysis. A single writer is
-sufficient — the sensor is not the bottleneck under any traffic a honeypot
-receives.
+**tlsfront em Go.** O ClientHello é consumido pelo handshake: depois que o `ssl` do
+Python pega o socket, aqueles bytes já foram. Ler primeiro significa ler antes de
+qualquer outra coisa tocar na conexão, e isso pede um processo que fique na frente.
 
-**FastAPI with docs disabled.** `docs_url`, `redoc_url` and `openapi_url` are all
-`None`. A decoy surface that advertises FastAPI is not imitating the application
-it claims to be, and the framework banner is one of the first things a scanner
-records.
+Go entrou porque compila pra binário estático e porque o `crypto/tls` deixa você
+entregar um `net.Conn` seu. O truque é um wrapper que devolve os bytes já lidos antes
+de repassar o resto: o fingerprint sai antes do handshake, e o handshake continua sem
+saber que alguém leu na frente. Zero dependência externa, só biblioteca padrão, então
+`go build` funciona em máquina que nunca viu o repositório.
 
-## Data model
+Só o JA4 de TLS está implementado. O resto da suíte JA4+ está sob FoxIO License 1.1,
+que proíbe monetização; o JA4 puro é BSD 3-Clause e serve num projeto MIT.
 
-One row per request. Denormalized on purpose: the analysis queries are
-aggregations over a single table, and a star schema would buy nothing at this
-scale while making the SQL harder to read in a repository whose point is being
-readable.
+**SQLite em WAL.** O laboratório tem que clonar e rodar com um comando. WAL evita que a
+leitura do dashboard trave a escrita da captura, e o dataset inteiro é um arquivo que dá
+pra copiar da máquina e analisar offline. Um escritor só dá conta: o sensor não é
+gargalo em nenhum volume que um honeypot recebe.
 
-Indexes cover the four access patterns: time range, source + time (velocity),
-verdict (breakdown), path (top targets).
+**FastAPI com docs desligado.** `docs_url`, `redoc_url` e `openapi_url` todos em `None`.
+Isca que anuncia FastAPI não está imitando aplicação nenhuma, e o banner de framework é
+das primeiras coisas que um scanner anota.
 
-Two derived columns carry most of the analytical weight:
+## Modelo de dados
 
-- `header_order_hash` — digest of the header names in arrival order. A property
-  of the HTTP client implementation, not of the request content. Two requests
-  with the same hash very likely came from the same stack even across different
-  User-Agent strings.
-- `src_ip_hash` — salted digest of the source address, always populated. The raw
-  address is optional (`EDL_STORE_IP_RAW=false`), so the sensor can run without
-  retaining personal data while keeping every correlation intact.
+Uma linha por requisição, desnormalizada de propósito. As consultas de análise são
+agregação sobre uma tabela só, e um esquema estrela não compraria nada nessa escala
+enquanto deixaria o SQL mais chato de ler num repositório cuja graça é ser legível.
 
-## Classifier internals
+Os índices cobrem os quatro padrões de acesso: janela de tempo, origem mais tempo
+(velocity), veredicto (breakdown) e path (mais visados).
 
-Signals are `(name, weight, verdict, detail)` tuples produced by four
-independent extractors:
+Duas colunas derivadas carregam quase toda a análise:
 
-| Extractor | Reads | Produces |
-|-----------|-------|----------|
-| `_path_signals` | method, path, query | intent evidence: artifacts, exploit shapes, login posts |
-| `_fingerprint_signals` | client stack | automation evidence, crawler verification |
-| `_velocity_signals` | sliding window | enumeration, rotation, volume |
-| `_human_signals` | client stack + window | evidence *against* automation |
+`header_order_hash` é o digest dos nomes de header na ordem em que chegaram. Isso é
+propriedade da implementação do cliente HTTP, não do conteúdo da requisição. Duas
+requisições com o mesmo hash quase certamente saíram da mesma stack, mesmo com
+User-Agent diferente.
 
-Weights sum per verdict. Then:
+`src_ip_hash` é o digest salgado do endereço, sempre preenchido. O endereço em claro é
+opcional (`EDL_STORE_IP_RAW=false`), então dá pra rodar sem reter dado pessoal e manter
+toda a correlação funcionando.
 
-1. **A verified crawler short-circuits.** Once identity is proven by
-   forward-confirmed rDNS, no behavioural score overrides it. This mirrors
-   allowlist semantics in a production bot manager — a verified Googlebot
-   crawling aggressively is still Googlebot.
-2. **Intent verdicts are ranked against each other**, excluding
-   `unclassified_automation`. Automation is a separate axis, not a competitor;
-   letting a noisy client fingerprint outvote an unambiguous attack pattern is
-   the false negative that matters.
-3. **Confidence blends three terms:** margin over the runner-up intent, absolute
-   magnitude of evidence, and a corroboration bonus when the client also looks
-   automated. A 10-vs-9 split must not report the same certainty as a 10-vs-0
-   split.
-4. **Fallbacks in order:** automated but illegible → `unclassified_automation`;
-   otherwise → `likely_human`.
+## Dentro do classificador
 
-### The gate that took a test to find
+Sinal é uma tupla `(nome, peso, veredicto, detalhe)`, produzida por cinco extratores
+independentes:
 
-Username-rotation signals fire only when the request being classified is itself
-an authentication attempt. Without that gate, one credential-stuffing run behind
-a corporate egress IP recolours every unrelated request from the same address —
-because velocity aggregates key on the IP, and the IP is shared.
+| Extrator | Lê | Produz |
+|----------|----|--------|
+| `_path_signals` | método, path, query | intenção: artefato, forma de exploit, post de login |
+| `_fingerprint_signals` | client stack | automação, verificação de crawler |
+| `_tls_signals` | JA4 do handshake | stack real do cliente, contradição com o que ele diz ser |
+| `_velocity_signals` | janela deslizante | enumeração, rotação, volume |
+| `_human_signals` | client stack e janela | evidência contra automação |
 
-This is not hypothetical: it appeared in the first local run, where every
-synthetic profile shared `127.0.0.1` and a `GET /admin` came back labelled
-`credential_attack`. It is pinned by
-`test_shared_ip_credential_run_does_not_taint_unrelated_requests`, with the
-inverse case pinned beside it so the fix cannot silently disarm the detection it
-protects.
+Os pesos somam por veredicto. Depois:
 
-## Threat model for the sensor itself
+Crawler verificado ganha na hora. Provou identidade por rDNS confirmado, nenhum score
+de comportamento derruba. É a semântica de allowlist de um bot manager de verdade: um
+Googlebot varrendo agressivamente continua sendo Googlebot.
 
-The sensor is deliberately exposed to hostile traffic, so it is treated as
-untrusted-adjacent infrastructure.
+Os veredictos de intenção competem entre si, e `unclassified_automation` fica fora dessa
+disputa. Automação é eixo separado. Deixar um fingerprint barulhento vencer um padrão de
+ataque inequívoco é o falso negativo que importa.
 
-| Threat | Mitigation |
-|--------|-----------|
-| RCE through the decoy surface | No dynamic evaluation anywhere. `decoys.resolve()` is a pure dict lookup — no filesystem access, no templating of user input, no deserialization |
-| Sensor used as an upload target | `client_max_body_size 64k` at the edge; body truncated to `EDL_MAX_BODY_BYTES` before storage |
-| Storage exhaustion | Rate limiting at the edge; body truncation; SQLite is the only writable path |
-| Credential liability | Salted digests only, enforced by `tests/test_redact.py` |
-| Attacker detects the honeypot | Framework banners disabled, verdict never leaked, static `Server: nginx` |
-| Container compromise → lateral movement | Non-root UID 10001, read-only application code, only `/data` writable, dashboard bound to loopback |
-| Poisoned source data | Trusted IP header set unconditionally at the edge |
+A confiança mistura três coisas: margem sobre o segundo colocado, magnitude absoluta da
+evidência, e um bônus pequeno quando o cliente também parece automatizado. Um 10 contra
+9 não pode reportar a mesma certeza de um 10 contra 0.
 
-## Deliberate omissions
+Se nada de intenção pontuou: automatizado sem intenção legível vira
+`unclassified_automation`, e o resto vira `likely_human`.
 
-**No active response.** The sensor never blocks, tarpits, or probes back. An
-observation instrument that acts on traffic becomes a participant, with the legal
-exposure that implies.
+### Header é alegação, ClientHello é evidência
 
-**No real vulnerable software.** No outdated CMS, no exploitable services. The
-value is in the classifier, and a genuinely exploitable host is an attacker
-foothold on infrastructure you own.
+Quando o JA4 diz que o handshake saiu do OpenSSL e o User-Agent diz Chrome, os sinais
+humanos derivados de header não são descontados: eles são **descartados**. `human_score`
+vai a zero.
 
-**No machine learning.** With hand-tuned weights, every verdict is traceable to
-the rule that produced it. A model would need a labelled corpus this lab does not
-have, and would trade the explainability that makes the output defensible for
-accuracy it cannot yet demonstrate.
+A alternativa seria somar os dois e torcer pro peso do TLS ganhar. Isso faz o resultado
+depender de quantos headers o atacante teve paciência de copiar, que é exatamente a
+variável sob controle dele. Um cliente com dez headers forjados passaria; com cinco,
+não. Descartar remove essa alavanca.
+
+O inverso não vale: fingerprint TLS desconhecido não gera sinal nenhum, nem a favor nem
+contra. Não conhecer um cliente é falta de informação, não evidência contra ele.
+
+### O gate que só apareceu com teste
+
+Sinal de rotação de usuário só conta quando a requisição sendo classificada é ela mesma
+uma tentativa de autenticação.
+
+Sem esse gate, uma rodada de credential stuffing atrás de um IP de saída corporativa
+repinta toda requisição não relacionada vinda do mesmo endereço, porque os agregados de
+velocity são chaveados pelo IP e o IP é compartilhado.
+
+Não é hipotético. Apareceu na primeira rodada local, onde todo perfil sintético saía de
+`127.0.0.1` e um `GET /admin` voltou marcado como `credential_attack`. Está travado em
+`test_shared_ip_credential_run_does_not_taint_unrelated_requests`, com o caso inverso
+logo ao lado pra correção não desarmar em silêncio a detecção que ela protege.
+
+## Ameaças contra o próprio sensor
+
+O sensor foi feito pra receber tráfego hostil, então é tratado como infraestrutura
+não confiável.
+
+| Ameaça | O que impede |
+|--------|--------------|
+| RCE pela superfície-isca | Nada é avaliado dinamicamente. `decoys.resolve()` é lookup puro de dicionário: sem filesystem, sem template com entrada do usuário, sem desserialização |
+| Sensor virar destino de upload | `client_max_body_size 64k` no edge, corpo truncado em `EDL_MAX_BODY_BYTES` antes de gravar |
+| Estouro de disco | Rate limit no edge, truncamento de corpo, e o SQLite é o único caminho de escrita |
+| Passivo de credencial | Só digest salgado, garantido por `tests/test_redact.py` |
+| Atacante perceber o honeypot | Banner de framework desligado, veredicto nunca vaza, `Server: nginx` fixo |
+| Container comprometido virar pivô | UID 10001 não-root, código da aplicação somente leitura, só `/data` gravável, dashboard preso no loopback |
+| Dado de origem envenenado | Header de IP confiável escrito pelo edge sem exceção |
+| JA4 forjado via header | `tlsfront` apaga `X-Edge-JA4*` do cliente antes de escrever o seu |
+| Socket aberto e mudo | Deadline de 10s pra ler o ClientHello, registro limitado a 16 KB |
+
+## O que ficou de fora
+
+Resposta ativa. O sensor não bloqueia, não tarpita e não escaneia de volta. Instrumento
+de observação que age no tráfego vira participante, com a exposição jurídica que vem
+junto.
+
+Software vulnerável de verdade. Nada de CMS desatualizado ou serviço explorável. O valor
+está no classificador, e host genuinamente explorável é ponto de apoio de atacante numa
+máquina sua.
+
+Machine learning. Com peso ajustado à mão, todo veredicto é rastreável até a regra que
+produziu ele. Modelo precisaria de corpus rotulado que esse laboratório não tem, e
+trocaria a explicabilidade que torna a saída defensável por uma acurácia que ainda não
+dá pra demonstrar.
