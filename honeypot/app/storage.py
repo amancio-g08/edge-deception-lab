@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS events (
     fingerprint_json    TEXT    NOT NULL DEFAULT '{}',
     ja4                 TEXT,
     ja4_raw             TEXT,
-    tls_family          TEXT
+    tls_family          TEXT,
+    client_id           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ts       ON events (ts);
@@ -51,6 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ip       ON events (src_ip_hash, ts);
 CREATE INDEX IF NOT EXISTS idx_events_verdict  ON events (verdict);
 CREATE INDEX IF NOT EXISTS idx_events_path     ON events (path);
 CREATE INDEX IF NOT EXISTS idx_events_ja4      ON events (ja4);
+CREATE INDEX IF NOT EXISTS idx_events_client   ON events (client_id, src_ip_hash, ts);
 """
 
 # Columns added after the first release. A lab that has been collecting for a
@@ -59,6 +61,7 @@ MIGRATIONS = (
     ("ja4", "ALTER TABLE events ADD COLUMN ja4 TEXT"),
     ("ja4_raw", "ALTER TABLE events ADD COLUMN ja4_raw TEXT"),
     ("tls_family", "ALTER TABLE events ADD COLUMN tls_family TEXT"),
+    ("client_id", "ALTER TABLE events ADD COLUMN client_id TEXT"),
 )
 
 
@@ -113,7 +116,7 @@ class EventStore:
             "headers_json", "header_order_hash", "ua_raw", "ua_family",
             "tool_signature", "declared_crawler", "crawler_verified",
             "username_hash", "verdict", "confidence", "signals_json",
-            "fingerprint_json", "ja4", "ja4_raw", "tls_family",
+            "fingerprint_json", "ja4", "ja4_raw", "tls_family", "client_id",
         )
         placeholders = ",".join("?" for _ in columns)
         values = [event.get(col) for col in columns]
@@ -123,12 +126,30 @@ class EventStore:
             )
             return int(cur.lastrowid or 0)
 
-    def velocity_for(self, src_ip_hash: str, window_seconds: int) -> dict[str, Any]:
-        """Sliding-window aggregates for the classifier."""
+    def velocity_for(
+        self, src_ip_hash: str, window_seconds: int, client_id: str | None = None
+    ) -> dict[str, Any]:
+        """Sliding-window aggregates for the classifier.
+
+        Keyed on the client identity when there is one, falling back to the
+        source IP. Keying on identity is the whole point of this: two clients
+        behind one shared address get independent velocity, so one attacker
+        stops tainting everyone who shares his egress.
+
+        The IP still narrows the window (same client from a new address is a new
+        context) so a rotating botnet does not collapse into one profile either.
+        """
         since = iso(utc_now() - timedelta(seconds=window_seconds))
+        if client_id:
+            where = "client_id = ? AND src_ip_hash = ? AND ts >= ?"
+            params = (client_id, src_ip_hash, since)
+        else:
+            where = "src_ip_hash = ? AND ts >= ?"
+            params = (src_ip_hash, since)
+
         with self._cursor() as cur:
             row = cur.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*)                                   AS requests,
                     COUNT(DISTINCT path)                       AS distinct_paths,
@@ -136,9 +157,9 @@ class EventStore:
                     COUNT(DISTINCT ua_raw)                     AS distinct_user_agents,
                     AVG(CASE WHEN status = 404 THEN 1.0 ELSE 0.0 END) AS not_found_ratio
                 FROM events
-                WHERE src_ip_hash = ? AND ts >= ?
+                WHERE {where}
                 """,
-                (src_ip_hash, since),
+                params,
             ).fetchone()
 
         return {
@@ -157,7 +178,7 @@ class EventStore:
                 SELECT
                     COUNT(*)                        AS events,
                     COUNT(DISTINCT src_ip_hash)     AS unique_sources,
-                    COUNT(DISTINCT header_order_hash) AS unique_clients,
+                    COUNT(DISTINCT COALESCE(client_id, header_order_hash)) AS unique_clients,
                     SUM(CASE WHEN username_hash IS NOT NULL THEN 1 ELSE 0 END) AS credential_attempts
                 FROM events WHERE ts >= ?
                 """,
@@ -343,7 +364,7 @@ class EventStore:
             rows = cur.execute(
                 """
                 SELECT ts, src_ip, method, path, query, status, verdict, confidence,
-                       ua_raw, tool_signature, signals_json, ja4, tls_family
+                       ua_raw, tool_signature, signals_json, ja4, tls_family, client_id
                 FROM events ORDER BY id DESC LIMIT ?
                 """,
                 (limit,),
@@ -362,6 +383,7 @@ class EventStore:
                     "client": r["tool_signature"] or (r["ua_raw"] or "")[:60],
                     "ja4": r["ja4"] or "",
                     "tls_family": r["tls_family"] or "",
+                    "client_id": r["client_id"] or "",
                     "signals": [s["name"] for s in json.loads(r["signals_json"])],
                 }
             )

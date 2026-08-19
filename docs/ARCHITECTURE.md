@@ -84,6 +84,12 @@ User-Agent diferente.
 opcional (`EDL_STORE_IP_RAW=false`), então dá pra rodar sem reter dado pessoal e manter
 toda a correlação funcionando.
 
+`client_id` é a identidade que não depende do endereço: digest de ordem de header + JA4
++ Accept-Language + família de UA. É o que a velocity usa como chave. Nenhuma dessas
+partes sozinha identifica ninguém, mas juntas separam dois clientes atrás do mesmo IP
+muito melhor do que o IP separa. Não é pessoa, é assinatura de forma de requisição, e
+nunca é tratada como pessoa.
+
 ## Dentro do classificador
 
 Sinal é uma tupla `(nome, peso, veredicto, detalhe)`, produzida por cinco extratores
@@ -94,7 +100,7 @@ independentes:
 | `_path_signals` | método, path, query | intenção: artefato, forma de exploit, post de login |
 | `_fingerprint_signals` | client stack | automação, verificação de crawler |
 | `_tls_signals` | JA4 do handshake | stack real do cliente, contradição com o que ele diz ser |
-| `_velocity_signals` | janela deslizante | enumeração, rotação, volume |
+| `_velocity_signals` | janela deslizante por `client_id` | enumeração, rotação, volume |
 | `_human_signals` | client stack e janela | evidência contra automação |
 
 Os pesos somam por veredicto. Depois:
@@ -128,19 +134,22 @@ não. Descartar remove essa alavanca.
 O inverso não vale: fingerprint TLS desconhecido não gera sinal nenhum, nem a favor nem
 contra. Não conhecer um cliente é falta de informação, não evidência contra ele.
 
-### O gate que só apareceu com teste
+### O problema de IP compartilhado, remendado e depois resolvido
 
-Sinal de rotação de usuário só conta quando a requisição sendo classificada é ela mesma
-uma tentativa de autenticação.
+Apareceu na primeira rodada local, onde todo perfil sintético saía de `127.0.0.1`: um
+`GET /admin` voltou marcado como `credential_attack`, porque a rotação de usuário de
+outro perfil no mesmo IP tinha contaminado o agregado.
 
-Sem esse gate, uma rodada de credential stuffing atrás de um IP de saída corporativa
-repinta toda requisição não relacionada vinda do mesmo endereço, porque os agregados de
-velocity são chaveados pelo IP e o IP é compartilhado.
+O primeiro remendo foi um gate: rotação de usuário só conta quando a requisição é ela
+mesma uma tentativa de autenticação. Isso parou o pior caso, mas a velocity ainda era um
+balde por IP, então um scanner e um browser atrás da mesma saída corporativa continuavam
+dividindo perfil.
 
-Não é hipotético. Apareceu na primeira rodada local, onde todo perfil sintético saía de
-`127.0.0.1` e um `GET /admin` voltou marcado como `credential_attack`. Está travado em
-`test_shared_ip_credential_run_does_not_taint_unrelated_requests`, com o caso inverso
-logo ao lado pra correção não desarmar em silêncio a detecção que ela protege.
+A correção de verdade é a `client_id`: a velocity passou a ser chaveada pela identidade
+do cliente, não pelo endereço. O IP ainda estreita a janela (mesmo cliente de um IP novo
+é contexto novo, então botnet que roda IP não colapsa num balde só), mas dois clientes
+distintos atrás de um IP ganham dois baldes. O gate continua lá como segunda linha, e o
+done-when está travado em `test_two_clients_behind_one_ip_have_independent_velocity`.
 
 ## Ameaças contra o próprio sensor
 
