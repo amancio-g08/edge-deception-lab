@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .fingerprint import Fingerprint
+from .fingerprint import SCRIPTED_TLS_FAMILIES, Fingerprint
 
 
 class Verdict(str, Enum):
@@ -168,6 +168,42 @@ def _path_signals(path: str, query: str, method: str) -> list[Signal]:
     return signals
 
 
+def _tls_signals(fp: Fingerprint) -> list[Signal]:
+    """Signals from the TLS handshake.
+
+    This is the half of the fingerprint a client cannot rewrite by editing
+    headers. Spoofing it means reimplementing the ClientHello, which almost
+    nothing in the wild bothers to do.
+    """
+    signals: list[Signal] = []
+
+    if not fp.ja4:
+        return signals  # plain HTTP, or tlsfront is not in the path
+
+    if fp.tls_family in SCRIPTED_TLS_FAMILIES:
+        if fp.claims_browser:
+            # The strongest single signal here. The UA says browser and the
+            # handshake says script library, and only one of the two is cheap
+            # to fake.
+            signals.append(
+                Signal(
+                    "tls_contradicts_user_agent",
+                    5.0,
+                    Verdict.UNCLASSIFIED_AUTOMATION,
+                    f"{fp.tls_family} stack with browser UA",
+                )
+            )
+        else:
+            signals.append(
+                Signal("scripted_tls_stack", 3.0, Verdict.UNCLASSIFIED_AUTOMATION, fp.tls_family)
+            )
+
+    if fp.tls_family == "chromium" and fp.claims_browser and not fp.tool_signature:
+        signals.append(Signal("browser_tls_stack", 2.5, Verdict.LIKELY_HUMAN, "chromium"))
+
+    return signals
+
+
 def _fingerprint_signals(fp: Fingerprint) -> list[Signal]:
     signals: list[Signal] = []
 
@@ -276,9 +312,21 @@ def _velocity_signals(ctx: VelocityContext, is_login_attempt: bool) -> list[Sign
     return signals
 
 
-def _human_signals(fp: Fingerprint, ctx: VelocityContext) -> list[Signal]:
-    """Evidence against automation. Without these everything looks like a bot."""
+def _human_signals(
+    fp: Fingerprint, ctx: VelocityContext, tls_contradiction: bool = False
+) -> list[Signal]:
+    """Evidence against automation. Without these everything looks like a bot.
+
+    Every signal here is read off headers, which is exactly what a client
+    forging a browser rewrites. So when the TLS handshake contradicts the
+    declared client, none of them count: the headers are the claim, the
+    ClientHello is the evidence, and a claim contradicted by evidence is worth
+    nothing.
+    """
     signals: list[Signal] = []
+
+    if tls_contradiction:
+        return signals
 
     if fp.has_sec_fetch and fp.claims_browser and not fp.tool_signature:
         signals.append(Signal("sec_fetch_present", 3.0, Verdict.LIKELY_HUMAN))
@@ -313,8 +361,12 @@ def classify(
     signals: list[Signal] = []
     signals += _path_signals(path, query, normalized_method)
     signals += _fingerprint_signals(fingerprint)
+    tls = _tls_signals(fingerprint)
+    signals += tls
     signals += _velocity_signals(ctx, is_login_attempt)
-    signals += _human_signals(fingerprint, ctx)
+
+    contradicted = any(s.name == "tls_contradicts_user_agent" for s in tls)
+    signals += _human_signals(fingerprint, ctx, contradicted)
 
     if status_code == 404:
         signals.append(Signal("not_found_response", 0.5, Verdict.RECON_PROBE))

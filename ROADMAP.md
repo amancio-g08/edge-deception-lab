@@ -1,119 +1,90 @@
 # Roadmap
 
-One branch per capability, merged with `--no-ff` so the history keeps the shape
-of the work. Each phase is independently useful — nothing here is a prerequisite
-for running what already exists.
+One branch per capability, merged with `--no-ff` so the history keeps the shape of the
+work. Nothing here blocks anything else; the lab already runs without all of it.
 
-Branch naming: `feat/<capability>`, `fix/<defect>`, `docs/<subject>`,
-`chore/<task>`.
+Naming: `feat/`, `fix/`, `docs/`, `chore/`.
 
----
+## Já feito
 
-## Shipped
+Superfície-isca inerte, fingerprint de requisição, verificação de crawler por rDNS
+confirmado, classificador de dois eixos com sinais explicáveis, persistência em SQLite,
+dashboard, camada nginx, Docker Compose, fingerprint de TLS e 54 testes.
 
-### Phase 1 — sensor core
-`feat/decoy-surface` · `feat/fingerprinting` · `feat/classifier` ·
-`feat/dashboard` · `feat/edge-layer`
+Branches: `feat/decoy-surface`, `feat/fingerprinting`, `feat/classifier`,
+`feat/storage`, `feat/sensor`, `feat/edge-layer`, `feat/dashboard`,
+`feat/traffic-simulator`, `fix/shared-ip-false-positives`.
 
-Inert decoy surface, request fingerprinting, forward-confirmed rDNS crawler
-verification, two-axis behavioural classifier with explainable signals, SQLite
-persistence, analysis dashboard, nginx edge layer, Docker Compose, 33 tests.
+E o `tlsfront`: terminação TLS em Go que lê o ClientHello antes do handshake, calcula
+o JA4 e repassa no header. Com ele, header forjado deixa de funcionar. Branch
+`feat/ja4-fingerprinting`.
 
----
+## `feat/fingerprint-identity`
 
-## Planned
+Velocity é chaveada por IP, e é daí que veio o falso positivo que está travado em
+`test_false_positives.py`. Um endereço de saída corporativa mistura muita gente num
+perfil só.
 
-### Phase 2 — `feat/ja4-fingerprinting`
-**Why:** TLS fingerprinting is the strongest automation signal available, and its
-absence is the biggest current blind spot. A client that reproduces browser
-headers perfectly is invisible to header-based detection; its TLS ClientHello
-still is not.
+Ideia: montar identidade composta de hash de ordem de header + JA4 + Accept-Language +
+plataforma declarada, e chavear os agregados nisso. O IP continua, mas só como dimensão
+de relatório.
 
-**Approach:** terminate TLS at a Go or Rust listener that computes JA4/JA4S and
-forwards the hash to the sensor as a header, since Python cannot see the
-ClientHello through the socket. Store the hash, correlate it against the header
-order hash, and flag disagreement between the two — a browser TLS fingerprint
-paired with a scripted header set is a contradiction that survives spoofing.
+O JA4 já está disponível desde o `tlsfront`, então o insumo existe.
 
-**Done when:** a `curl` request and a real Chrome request to the same path carry
-different JA4 hashes in the event record, and the mismatch signal fires.
+Pronto quando: dois clientes sintéticos distintos atrás do mesmo IP produzem contextos
+de velocity independentes.
 
----
+## `feat/asn-enrichment`
 
-### Phase 3 — `feat/fingerprint-identity`
-**Why:** velocity currently keys on source IP, so one CGNAT address mixes many
-users into one profile. This is the root cause of the shared-IP false positive
-that `test_false_positives.py` currently mitigates rather than solves.
+Saber de qual provedor veio o endereço muda a linha de base. Faixa residencial,
+datacenter e pool de proxy conhecido têm expectativas diferentes, e "fingerprint de
+navegador saindo de ASN de nuvem" é contradição fácil de pegar.
 
-**Approach:** derive a composite client identity from header order hash + JA4 +
-Accept-Language + declared platform. Key velocity aggregates on that identity
-instead of the address. Keep the IP as a secondary dimension for reporting.
+Base MaxMind GeoLite2 ASN offline, carregada no boot, sem chamada de API em runtime.
 
-**Done when:** two distinct synthetic clients behind the same source IP produce
-independent velocity contexts.
+Pronto quando: evento carrega ASN e país, e navegador saindo de datacenter sobe o score
+de automação.
 
----
+## `feat/waf-simulation`
 
-### Phase 4 — `feat/asn-enrichment`
-**Why:** the hosting provider behind an address is a strong prior. Residential
-ranges, datacenter ASNs and known proxy pools each imply a different baseline,
-and "browser fingerprint originating from a cloud ASN" is a classic
-contradiction.
+É aqui que o projeto encosta de volta no trabalho. Depois de classificar o tráfego, a
+pergunta natural é o que uma política real teria feito com aquilo, e quantas requisições
+legítimas ela teria pego junto.
 
-**Approach:** offline MaxMind GeoLite2 ASN database, loaded at startup, no
-runtime API calls. Add an `asn_context` signal and surface top ASNs on the
-dashboard.
+Avaliar o tráfego capturado contra um subconjunto de regras no estilo OWASP CRS, em
+cada nível de paranoia, e reportar cobertura de detecção contra falso positivo no mesmo
+corpus. É a visão que falta pra decidir se dá pra tirar uma regra do alerta.
 
-**Done when:** events carry ASN and country, and a datacenter-origin browser
-fingerprint raises its automation score.
+Pronto quando: sai um relatório dizendo "no nível 2 essa política bloqueia N
+requisições hostis e M legítimas", a partir de tráfego real capturado.
 
----
+## `feat/reporting`
 
-### Phase 5 — `feat/waf-simulation`
-**Why:** this is the bridge back to the day job. Once traffic is classified, the
-obvious next question is what a real policy would have done with it — and how
-many legitimate requests a given ruleset would have caught.
+O resultado de uma análise é um documento que alguém lê e age, não um dashboard que
+alguém olha de passagem.
 
-**Approach:** evaluate captured requests against an OWASP CRS-style rule subset
-at each paranoia level, and report detection coverage against false positives on
-the same corpus. Produce the alert-to-block readiness view that a tuning
-exercise actually needs.
+Geração agendada: origens mais ativas, agrupamento de campanha por fingerprint, sinais
+novos desde a última rodada, mudanças de regra sugeridas com a evidência anexada.
+Markdown e PDF.
 
-**Done when:** a report answers "at paranoia level 2, this policy blocks N
-hostile requests and M legitimate ones" from real captured traffic.
+Pronto quando: `make report` produz algo que dá pra mandar pro cliente sem editar.
 
----
+## `feat/multi-sensor`
 
-### Phase 6 — `feat/reporting`
-**Why:** the output of an analysis is a document someone acts on, not a
-dashboard someone glances at.
+Um sensor enxerga um ponto de vista. Correlacionar o mesmo fingerprint em regiões
+diferentes separa campanha direcionada de ruído de fundo da internet.
 
-**Approach:** scheduled report generation — top attacking sources, campaign
-clustering by fingerprint, new signals seen since the last run, recommended rule
-changes with the evidence attached. Markdown and PDF.
+Sensores empurram evento pra um coletor, correlação de identidade entre eles,
+primeiro-visto e último-visto por fingerprint.
 
-**Done when:** `make report` produces a document that could be sent to a customer
-without editing.
+Pronto quando: o mesmo cliente sintético batendo em dois sensores aparece como um ator
+só.
 
----
+## O que não vai entrar
 
-### Phase 7 — `feat/multi-sensor`
-**Why:** one sensor sees one vantage point. Correlating the same fingerprint
-across regions distinguishes a targeted campaign from internet background
-radiation.
+Resposta ativa. Nada de bloquear, tarpitar ou escanear de volta. Instrumento de
+observação que age no tráfego vira participante, com a exposição jurídica que vem
+junto.
 
-**Approach:** sensors push events to a collector; identity correlation across
-sensors; first-seen/last-seen per fingerprint.
-
-**Done when:** the same synthetic client hitting two sensors is reported as one
-actor.
-
----
-
-## Not planned
-
-- **Active response.** No blocking, no tarpitting, no counter-scanning. A sensor
-  that acts on traffic stops being an observation instrument and starts being a
-  participant, with the legal exposure that implies.
-- **Real vulnerable software.** No deliberately outdated CMS, no exploitable
-  services. The decoy surface stays inert — see the safety section of the README.
+Software vulnerável de verdade. Nada de CMS desatualizado ou serviço explorável. A
+isca continua inerte, pelos motivos da seção de cuidados do README.
